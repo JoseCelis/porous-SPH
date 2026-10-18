@@ -2,8 +2,9 @@
 
 /*******time parameteres******/
 //dt set by CFL: dt <= 0.4*h/cvel, h_water~0.0736, cvel=80 -> dt<=0.00037
-const int TS = 1000000;  //number of time steps
+const int TS = 100000;  //number of time steps
 const double dt = 0.00005; //0.0003
+const int frame_every = 1000; //write a frame (NNN.dat) every this many steps
 
 /*****cvel warm-up ramp*******/
 //a freshly-placed (random) particle field has large local density variance;
@@ -156,6 +157,8 @@ inline double min_image_x(double dx){
   if(!periodic_x) return dx;
   return dx - box_Lx*round(dx/box_Lx);
 }
+
+#include "rocks.h" //the rocks: needs the wall and periodic definitions above
 
 //caps a single surface-tension contribution's acceleration magnitude: the CSF
 //normal estimate is noisy at a sparsely-sampled free surface, and the kernel
@@ -810,6 +813,11 @@ void forces(Particle *body, boundaries& limit){
             - wall_repulsion(limit.boundaryY[1]-body[i].r[1], boundary_r0, boundary_D) )*body[i].density;
     ai2 += ( wall_repulsion(body[i].r[2]-limit.boundaryZ[0], boundary_r0, boundary_D)
             - wall_repulsion(limit.boundaryZ[1]-body[i].r[2], boundary_r0, boundary_D) )*body[i].density;
+    double frock[3];
+    rock_force(body[i].r, frock);//rocks repel like the walls, see rocks.h
+    ai0 += frock[0]*body[i].density;
+    ai1 += frock[1]*body[i].density;
+    ai2 += frock[2]*body[i].density;
 
     #pragma omp atomic
     body[i].a[0] += ai0;
@@ -931,6 +939,7 @@ void useboundaries(Particle& body, boundaries& limit){
     body.r[2] = limit.boundaryZ[1];
     if(body.v[2] > 0.0) body.v[2] = 0.0;
   }
+  rock_clamp(body.r, body.v);//same safety net for the rocks, see rocks.h
 }
 
 void initialize(Particle *body, boundaries& limit, int phases, string shape){
@@ -946,6 +955,7 @@ void initialize(Particle *body, boundaries& limit, int phases, string shape){
     zheight = dropZ + drop_radius_cells*pow(Volwater/N1, 1.0/3.0) + 4.0*h_water_ref;
   }
   limit.set_boundaries("cube", dim, zheight);
+  setup_rocks(dim);//after set_boundaries: needs box_Lx for the periodic distances
   initial_cond(shape, body, phases);
 }
 
@@ -1026,10 +1036,11 @@ int main(){
     double cvel_frac = (ts < cvel_ramp_steps) ? (double)ts/cvel_ramp_steps : 1.0;
 #pragma omp parallel for
     for(int i=0; i<N; i++) liquid[i].ramp_cvel(cvel_frac);
+    rock_grow(ts);//rocks grow in over the first steps, see rocks.h
     verlet(liquid, limit, dt, 1);
     forces(liquid, limit);
     verlet(liquid, limit, dt, 2);
-    if(ts%1000 ==0){
+    if(ts%frame_every ==0){
       count++;
       kinetic_E(liquid,count);
     }
