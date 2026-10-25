@@ -63,14 +63,6 @@ const double thresholdpetroleum = 5.748;//was 6.0 for poly6; see the note on ker
 //real crude-water interfacial tension is ~0.02-0.03 N/m
 const double sigma_interphase = 0.05;  // try 0.02 N/m
 
-/*****mucus fluid paramenters******/
-const double rhomucus = 1500.00; // kg/m^3
-const double Volmucus = 0.15; //m^3 
-const double mumucus = 36.0; //viscosity
-const double buoyancymucus = 0.0;  
-const double sigmamucus = 6.0; //surface tension constant
-const double thresholdmucus = 5.0;
-
 /******Smoothing length / particle spacing ratio*******/
 //h = (kernel_vol_const*315*Vol/(64*pi*N))^(1/3), i.e. h/s = (c*315/(64*pi))^(1/3)
 //with s the rest particle spacing. 5.1063 gives h/s = 2.0, about 33 neighbours.
