@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -83,6 +84,18 @@ const double kernel_vol_const = 5.1063;
 /******Number of particles *********/
 const int N1 = 5500;  //number of particles
 const int N2 = 5500;
+
+/******Random initial conditions******/
+//One generator for every random draw in the set-up: the "cube" jitter, the
+//"layered" positions, and the random phase in setparams() when phases != 1.
+//The seed is fixed, so a run is reproducible. The "file" start draws nothing.
+//rocks.h has its own generator (rock_seed), so the two never shift each other.
+const unsigned int init_seed = 0;
+mt19937 init_rng(init_seed);
+//uniform in [0, 1)
+inline double uniform01(){
+  return uniform_real_distribution<double>(0.0, 1.0)(init_rng);
+}
 
 /******Water drop released above the equilibrium pool*******/
 //Shape of the drop: "sphere", "cube", or "none". Use "none" for the settling
@@ -234,7 +247,7 @@ void Particle::setparams(int phases){
     Gamma = Gammawater;
   }
   else{
-    if( (double)rand()/(RAND_MAX) <= 0.5 )
+    if( uniform01() <= 0.5 )
       setphase(1);
     else
       setphase(2);
@@ -337,9 +350,9 @@ void initial_cond(string fig, Particle *body, int phases){
       int ix = i % nx;
       int iy = (i/nx) % ny;
       int iz = i/(nx*ny);
-      body[i].r[0] = -dim + (ix+0.5)*spacing + jit*(2*((double)rand()/(RAND_MAX)) - 1.0);
-      body[i].r[1] = -dim + (iy+0.5)*spacing + jit*(2*((double)rand()/(RAND_MAX)) - 1.0);
-      body[i].r[2] =        (iz+0.5)*spacing + jit*(2*((double)rand()/(RAND_MAX)) - 1.0);
+      body[i].r[0] = -dim + (ix+0.5)*spacing + jit*(2*uniform01() - 1.0);
+      body[i].r[1] = -dim + (iy+0.5)*spacing + jit*(2*uniform01() - 1.0);
+      body[i].r[2] =        (iz+0.5)*spacing + jit*(2*uniform01() - 1.0);
       fill( body[i].v, body[i].v+3, 0.0 );
     }
   }
@@ -355,15 +368,15 @@ void initial_cond(string fig, Particle *body, int phases){
       body[i].setdensity(0.0);
       body[i].reinit();
       fill( body[i].v, body[i].v+3, 0.0 );
-      body[i].r[0] = (2*((double)rand()/(RAND_MAX)) - 1.0)*dim;//(-dim,dim)
-      body[i].r[1] = (2*((double)rand()/(RAND_MAX)) - 1.0)*dim;//(-dim,dim)
+      body[i].r[0] = (2*uniform01() - 1.0)*dim;//(-dim,dim)
+      body[i].r[1] = (2*uniform01() - 1.0)*dim;//(-dim,dim)
       if(i < N1){
         body[i].setphase(1);//water: upper band
-        body[i].r[2] = zmid + ((double)rand()/(RAND_MAX))*(dim-zmid);
+        body[i].r[2] = zmid + uniform01()*(dim-zmid);
       }
       else{
         body[i].setphase(2);//petroleum: lower band
-        body[i].r[2] = ((double)rand()/(RAND_MAX))*zmid;
+        body[i].r[2] = uniform01()*zmid;
       }
     }
   }
@@ -992,7 +1005,6 @@ void kinetic_E(Particle *body, int count){
 
 
 int main(){
-  srand(0);  //srand((unsigned)time(0)) 
   vector<Particle> particles(N);
   Particle *liquid = particles.data();
   boundaries limit;

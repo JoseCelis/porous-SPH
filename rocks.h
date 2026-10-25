@@ -293,7 +293,7 @@ void setup_rocks(double dim, int steps_per_frame){
     }
   }
   else if( strcmp(rock_mode, "random") == 0 ){
-    std::mt19937 gen(rock_seed);//own generator: does not shift the rand() stream used elsewhere
+    std::mt19937 gen(rock_seed);//own generator: does not shift init_rng in sph.cpp
     std::uniform_real_distribution<double> u(0.0, 1.0);
     const int max_tries = 100000;
     int tries = 0;
