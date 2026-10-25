@@ -1,5 +1,5 @@
 CXX      = g++
-CXXFLAGS = -O2 -fopenmp
+CXXFLAGS = -O2 -fopenmp -Wall -Wextra
 LDFLAGS  = -lm
 
 TARGET = sph

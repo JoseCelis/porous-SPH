@@ -134,7 +134,13 @@ const int Ndrop = (int)drop_offsets().size();
 
 const int N = N1+N2+Ndrop;
 const double VolT = Volwater + Volpetroleum;
-const double h_water_ref = pow(315*Volwater*kernel_vol_const/(64*M_PI*N1),0.3333); //water smoothing length, reused as a lengthscale outside the Particle class
+//smoothing length of n particles filling volume vol (see the note on kernel_vol_const)
+inline double smoothing_length(double vol, int n){
+  return cbrt(315*vol*kernel_vol_const/(64*M_PI*n));
+}
+const double h_water_ref = smoothing_length(Volwater, N1); //water smoothing length, reused as a lengthscale outside the Particle class
+const double s_water = cbrt(Volwater/N1); //rest spacing of the water particles
+const double box_dim = cbrt(VolT/4.0); //box half-width, sized so that (2*box_dim)*(2*box_dim)*box_dim == VolT
 
 /******Boundary repulsion parameters******/
 //Smooth push-back as a particle nears a wall. Range is HALF a smoothing length,
@@ -248,7 +254,7 @@ public:
 void Particle::setparams(int phases){
   if( phases == 1){
     phase = 1;
-    h =  pow(315*VolT*kernel_vol_const/(64*M_PI*N), 0.3333);
+    h = smoothing_length(VolT, N);
     rhozero = rhowater;
     mass = rhozero * VolT/N;
     mu = muwater;
@@ -269,7 +275,7 @@ void Particle::setparams(int phases){
 void Particle::setphase(unsigned int ph){
   if(ph == 1){
     phase = 1;
-    h =  pow(315*Volwater*kernel_vol_const/(64*M_PI*N1),0.3333);
+    h = smoothing_length(Volwater, N1);
     rhozero = rhowater;
     mass = rhozero * Volwater/N1;
     mu = muwater;
@@ -281,7 +287,7 @@ void Particle::setphase(unsigned int ph){
   }
   else{
     phase = 2;
-    h =  pow(315*Volpetroleum*kernel_vol_const/(64*M_PI*N2),0.3333);
+    h = smoothing_length(Volpetroleum, N2);
     rhozero = rhopetroleum;
     mass = rhozero * Volpetroleum/N2;
     mu = mupetroleum;
@@ -344,14 +350,14 @@ void initial_cond(string fig, Particle *body, int phases){
   if(fig == "cube"){
     //dim must match the box set by set_boundaries so particles are placed
     //inside the actual domain instead of outside its walls
-    double dim = pow(VolT/4.0, 0.33333);
+    const double dim = box_dim;
     //Lattice, not uniform random. Random placement puts many pairs at
     //near-zero separation, where the pressure gradient is largest:
     //two nearly-coincident particles see a huge acceleration and the run starts by exploding
     //and never recovers. The lattice starts every particle at exactly rest
     //density; the small jitter breaks the lattice symmetry so it does not
     //behave like a crystal. The top layer is partial, which is the free surface.
-    double spacing = pow(VolT/N, 1.0/3.0);
+    double spacing = cbrt(VolT/N);
     int nx = (int)(2.0*dim/spacing);
     int ny = nx;
     double jit = 0.05*spacing;
@@ -374,7 +380,7 @@ void initial_cond(string fig, Particle *body, int phases){
     //equilibrium, so the swap is visible as the simulation runs.
     //dim must match the box set by set_boundaries so the placement volume
     //(and therefore the SPH density estimate) is consistent with Volwater/Volpetroleum
-    double dim = pow(VolT/4.0, 0.33333);
+    const double dim = box_dim;
     double zmid = dim/2.0;
     for(int i=0; i<N; i++ ){
       body[i].setdensity(0.0);
@@ -439,7 +445,6 @@ void initial_cond(string fig, Particle *body, int phases){
     //same offsets that determined Ndrop and scaled by the water particle's rest
     //spacing so the drop begins at the pool's own density. Deliberately not
     //jittered -- the symmetry is the point, so the splash stays axisymmetric.
-    double s_water = pow(Volwater/N1, 1.0/3.0);
     vector<Offset> off = drop_offsets();
     for(size_t k=0; k<off.size(); k++){
       int i = Nfile + (int)k;
@@ -952,7 +957,7 @@ void useboundaries(Particle& body, boundaries& limit){
 }
 
 void initialize(Particle *body, boundaries& limit, int phases, string shape){
-  double dim = pow(VolT/4.0, 0.33333);//box sized so that (2*dim)*(2*dim)*dim == VolT
+  const double dim = box_dim;
   //Ceiling at 2*dim: the fluid occupies the lower half, so it has a real free
   //surface to relieve the inward push of the wall repulsion. At zheight==dim it
   //exactly fills the box and the boundary force can only compress it; at
@@ -961,7 +966,7 @@ void initialize(Particle *body, boundaries& limit, int phases, string shape){
   if(shape == "file" && Ndrop > 0){
     //raise the ceiling clear of the drop: its own top, plus a few smoothing
     //lengths so the ceiling repulsion is not touching it at release
-    zheight = dropZ + drop_radius_cells*pow(Volwater/N1, 1.0/3.0) + 4.0*h_water_ref;
+    zheight = dropZ + drop_radius_cells*s_water + 4.0*h_water_ref;
   }
   limit.set_boundaries("cube", dim, zheight);
   setup_rocks(dim);//after set_boundaries: needs box_Lx for the periodic distances
