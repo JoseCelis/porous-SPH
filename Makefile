@@ -5,7 +5,7 @@ LDFLAGS  = -lm
 TARGET = sph
 SRC    = sph.cpp
 
-.PHONY: all run fresh animate clean
+.PHONY: all run fresh animate format clean
 # prerequisites of `all` must run in order: simulate, then plot
 .NOTPARALLEL:
 
@@ -38,6 +38,10 @@ PYTHON = .venv/bin/python
 
 animate:
 	$(PYTHON) render_pyvista.py $(DIR) --out $(OUT) $(ARGS)
+
+# Apply the layout in .clang-format to the C++ sources, in place.
+format:
+	clang-format -i $(SRC) geometry.h kernel.h rocks.h
 
 clean:
 	rm -f $(TARGET) *.dat

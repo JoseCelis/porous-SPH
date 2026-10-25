@@ -31,39 +31,42 @@
    at the same ratio, so the switch is also the more accurate estimate.
    =========================================================================== */
 
-inline double kernel_cubic(double h, double r)
-{
+inline double kernel_cubic(double h, double r) {
   if(h <= 0.0 || r >= h) return 0.0;
-  double q   = 2.0*r/h;
-  double sig = 8.0/(M_PI*h*h*h);
-  if(q <= 1.0) return sig*( 1.0 - 1.5*q*q + 0.75*q*q*q );
+  double q = 2.0 * r / h;
+  double sig = 8.0 / (M_PI * h * h * h);
+  if(q <= 1.0) return sig * (1.0 - 1.5 * q * q + 0.75 * q * q * q);
   double a = 2.0 - q;
-  return sig*0.25*a*a*a;
+  return sig * 0.25 * a * a * a;
 }
 
 /* dW/dr. Negative over the whole support, zero at r=0 and at r=h. */
-inline double Dkernel_cubic(double h, double r)
-{
+inline double Dkernel_cubic(double h, double r) {
   if(h <= 0.0 || r >= h) return 0.0;
-  double q   = 2.0*r/h;
-  double sig = 16.0/(M_PI*h*h*h*h);
-  if(q <= 1.0) return sig*( -3.0*q + 2.25*q*q );
+  double q = 2.0 * r / h;
+  double sig = 16.0 / (M_PI * h * h * h * h);
+  if(q <= 1.0) return sig * (-3.0 * q + 2.25 * q * q);
   double a = 2.0 - q;
-  return sig*( -0.75*a*a );
+  return sig * (-0.75 * a * a);
 }
 
 /* Full 3D radial Laplacian, d2W/dr2 + (2/r) dW/dr. Finite at r=0
    (-288/(pi h^5) there) because f'(q)/q tends to -3. */
-inline double DDkernel_cubic(double h, double r)
-{
+inline double DDkernel_cubic(double h, double r) {
   if(h <= 0.0 || r >= h) return 0.0;
-  double q = 2.0*r/h;
-  if(q < 1e-8) q = 1e-8;//guard the f'(q)/q division; the limit itself is finite
-  double sig = 32.0/(M_PI*h*h*h*h*h);
+  double q = 2.0 * r / h;
+  if(q < 1e-8) q = 1e-8; //guard the f'(q)/q division; the limit itself is finite
+  double sig = 32.0 / (M_PI * h * h * h * h * h);
   double fp, fpp;
-  if(q <= 1.0){ fp = -3.0*q + 2.25*q*q;   fpp = -3.0 + 4.5*q; }
-  else        { double a = 2.0 - q;  fp = -0.75*a*a;  fpp = 1.5*a; }
-  return sig*( fpp + 2.0*fp/q );
+  if(q <= 1.0) {
+    fp = -3.0 * q + 2.25 * q * q;
+    fpp = -3.0 + 4.5 * q;
+  } else {
+    double a = 2.0 - q;
+    fp = -0.75 * a * a;
+    fpp = 1.5 * a;
+  }
+  return sig * (fpp + 2.0 * fp / q);
 }
 
 #endif

@@ -14,17 +14,17 @@ const bool periodic_x = true;
 double box_x0 = 0.0, box_Lx = 0.0; //set by boundaries::set_boundaries
 
 //map x back into [box_x0, box_x0+box_Lx)
-inline double wrap_x(double x){
+inline double wrap_x(double x) {
   if(!periodic_x) return x;
-  x -= box_Lx*floor( (x-box_x0)/box_Lx );
-  if(x >= box_x0+box_Lx) x = box_x0;//floor rounding can land exactly on the upper edge
+  x -= box_Lx * floor((x - box_x0) / box_Lx);
+  if(x >= box_x0 + box_Lx) x = box_x0; //floor rounding can land exactly on the upper edge
   return x;
 }
 
 //minimum-image x separation: the nearest periodic copy of the pair
-inline double min_image_x(double dx){
+inline double min_image_x(double dx) {
   if(!periodic_x) return dx;
-  return dx - box_Lx*round(dx/box_Lx);
+  return dx - box_Lx * round(dx / box_Lx);
 }
 
 /******Wall repulsion******/
@@ -34,11 +34,11 @@ inline double min_image_x(double dx){
 //0 there left a particle that overshot with nothing pushing it back in.
 //Used for the box walls (sph.cpp) and the rock faces (rocks.h); the range r0
 //and strength D are the boundary_r0/boundary_D parameters in sph.cpp.
-inline double wall_repulsion(double d, double r0, double D){
+inline double wall_repulsion(double d, double r0, double D) {
   if(d >= r0) return 0.0;
   if(d <= 0.0) return D;
-  double x = 1.0 - d/r0;
-  return D*x*x;
+  double x = 1.0 - d / r0;
+  return D * x * x;
 }
 
 #endif
