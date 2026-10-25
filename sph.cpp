@@ -1,4 +1,6 @@
+#include "geometry.h"
 #include "kernel.h"
+#include "rocks.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,7 +17,7 @@ using namespace std;
 
 /*******time parameteres******/
 //dt set by CFL: dt <= 0.4*h/cvel, h_water~0.0736, cvel=80 -> dt<=0.00037
-const int TS = 10000;  //number of time steps
+const int TS = 100000;  //number of time steps
 const double dt = 0.00005; //0.0003
 const int frame_every = 1000; //write a frame (NNN.dat) every this many steps
 
@@ -152,32 +154,7 @@ const double box_dim = cbrt(VolT/4.0); //box half-width, sized so that (2*box_di
 //about half a spacing. Fast particles that beat it are caught by the
 //(dissipative) clamp in useboundaries().
 const double boundary_r0 = 0.5*h_water_ref;
-const double boundary_D  = 500.0;
-double wall_repulsion(double d, double r0, double D); //defined near useboundaries()
-
-/******Periodic boundary in x******/
-//When true, the x walls are removed: a particle leaving through x = x0+Lx
-//re-enters at x0 and vice versa, and every pair separation uses the minimum
-//image in x. Requires Lx >= 3*h so the neighbour grid has at least 3 distinct
-//cells across x (otherwise the 3x3x3 stencil would visit a cell twice).
-const bool periodic_x = true;
-double box_x0 = 0.0, box_Lx = 0.0; //set by boundaries::set_boundaries
-
-//map x back into [box_x0, box_x0+box_Lx)
-inline double wrap_x(double x){
-  if(!periodic_x) return x;
-  x -= box_Lx*floor( (x-box_x0)/box_Lx );
-  if(x >= box_x0+box_Lx) x = box_x0;//floor rounding can land exactly on the upper edge
-  return x;
-}
-
-//minimum-image x separation: the nearest periodic copy of the pair
-inline double min_image_x(double dx){
-  if(!periodic_x) return dx;
-  return dx - box_Lx*round(dx/box_Lx);
-}
-
-#include "rocks.h" //the rocks: needs the wall and periodic definitions above
+const double boundary_D  = 500.0; //wall_repulsion() itself is in geometry.h, with periodic_x
 
 //caps a single surface-tension contribution's acceleration magnitude: the CSF
 //normal estimate is noisy at a sparsely-sampled free surface, and the kernel
@@ -828,7 +805,7 @@ void forces(Particle *body, boundaries& limit){
     ai2 += ( wall_repulsion(body[i].r[2]-limit.boundaryZ[0], boundary_r0, boundary_D)
             - wall_repulsion(limit.boundaryZ[1]-body[i].r[2], boundary_r0, boundary_D) )*body[i].density;
     double frock[3];
-    rock_force(body[i].r, frock);//rocks repel like the walls, see rocks.h
+    rock_force(body[i].r, boundary_r0, boundary_D, frock);//rocks repel like the walls, see rocks.h
     ai0 += frock[0]*body[i].density;
     ai1 += frock[1]*body[i].density;
     ai2 += frock[2]*body[i].density;
@@ -845,17 +822,6 @@ void forces(Particle *body, boundaries& limit){
       body[i].a[j] /= body[i].density;
     }
   }
-}
-
-//Monaghan-style boundary repulsion, bounded (no singularity): ramps from 0 at
-//d=r0 up to D at d=0, so it stays numerically safe under a fixed dt.
-//Past the wall (d<=0) it holds at D rather than dropping back to 0 -- returning
-//0 there left a particle that overshot with nothing pushing it back in.
-double wall_repulsion(double d, double r0, double D){
-  if(d >= r0) return 0.0;
-  if(d <= 0.0) return D;
-  double x = 1.0 - d/r0;
-  return D*x*x;
 }
 
 void useboundaries(Particle& body, boundaries& limit){
@@ -969,7 +935,7 @@ void initialize(Particle *body, boundaries& limit, int phases, string shape){
     zheight = dropZ + drop_radius_cells*s_water + 4.0*h_water_ref;
   }
   limit.set_boundaries("cube", dim, zheight);
-  setup_rocks(dim);//after set_boundaries: needs box_Lx for the periodic distances
+  setup_rocks(dim, frame_every);//after set_boundaries: needs box_Lx for the periodic distances
   initial_cond(shape, body, phases);
 }
 

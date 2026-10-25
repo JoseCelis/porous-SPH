@@ -14,7 +14,7 @@ SRC    = sph.cpp
 # Run `make clean` yourself when you actually want the data gone.
 all: run animate
 
-$(TARGET): $(SRC) kernel.h rocks.h
+$(TARGET): $(SRC) geometry.h kernel.h rocks.h
 	$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET) $(LDFLAGS)
 
 run: $(TARGET)
