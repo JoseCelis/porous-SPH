@@ -1,0 +1,57 @@
+# Rocks for sph.cpp, read at startup when rock_mode = "file" in rocks.h.
+# One row per rock. Add or delete rows to change the number of rocks; no rebuild needed.
+#   x, y, z    : rock centre in metres (box: -0.63..0.63 in x and y, floor at z = 0, pool 0.63 deep)
+#   size       : scale of the template shape in rocks.h (1 = about 0.4 m across)
+#   yaw_deg    : rotation about z, in degrees
+#   tilt_deg   : then rotation about x, in degrees
+# Lines starting with # are comments. Nothing checks for overlaps here: keep rocks
+# a few particle spacings (~0.1 m) apart and inside the box.
+#
+# The 20 rocks below were placed at random (seed 4) with sizes 0.20-0.45, every
+# rock at least 0.08 m clear of every other rock, the y walls, the x box edges
+# and the floor (measured between bounding spheres, so real gaps are larger).
+# Centres are kept at z <= 0.55, inside the 0.63 m pool.
+#
+# Rocks 21-40 were added the same way around the first 20 (seed 1), with smaller
+# sizes 0.15-0.30 because the larger ones no longer fit at 0.08 m clearance.
+x,y,z,size,yaw_deg,tilt_deg
+0.175,0.378,0.434,0.45,54,88
+-0.313,-0.002,0.374,0.44,262,9
+0.376,0.070,0.295,0.44,29,47
+-0.021,-0.243,0.442,0.44,301,71
+0.059,0.101,0.221,0.43,296,68
+-0.224,0.401,0.279,0.43,26,15
+0.404,-0.288,0.493,0.42,184,16
+-0.429,0.320,0.499,0.40,316,46
+-0.295,-0.428,0.498,0.40,337,3
+-0.306,-0.329,0.211,0.35,238,79
+0.185,-0.362,0.224,0.35,9,2
+0.192,-0.030,0.511,0.34,180,61
+0.415,0.456,0.177,0.33,214,58
+0.455,0.262,0.514,0.32,63,63
+-0.109,0.229,0.508,0.31,8,76
+0.430,-0.445,0.259,0.29,282,52
+0.462,-0.191,0.229,0.29,70,51
+-0.061,-0.408,0.203,0.24,51,35
+-0.355,0.183,0.180,0.24,337,57
+-0.038,-0.165,0.166,0.22,130,20
+0.061,0.411,0.168,0.29,269,3
+0.177,-0.462,0.490,0.29,303,45
+-0.132,0.466,0.549,0.27,144,44
+-0.467,-0.176,0.543,0.27,327,85
+-0.477,-0.097,0.176,0.26,82,9
+-0.452,0.457,0.155,0.23,317,31
+-0.479,-0.473,0.306,0.23,155,42
+0.479,-0.007,0.536,0.23,251,42
+0.194,-0.127,0.188,0.22,167,70
+-0.046,0.018,0.449,0.21,157,12
+-0.185,-0.012,0.146,0.21,148,73
+0.263,0.285,0.153,0.21,265,82
+0.490,0.484,0.412,0.20,103,25
+-0.048,-0.490,0.543,0.20,70,58
+-0.489,-0.240,0.344,0.20,138,82
+-0.252,-0.188,0.541,0.19,256,62
+0.491,0.239,0.138,0.18,26,38
+-0.502,0.065,0.531,0.17,154,21
+-0.166,0.190,0.130,0.17,163,21
+-0.501,0.280,0.263,0.15,115,35

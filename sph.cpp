@@ -1,9 +1,23 @@
 #include "kernel.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
+
+using namespace std;
+
 /*******time parameteres******/
 //dt set by CFL: dt <= 0.4*h/cvel, h_water~0.0736, cvel=80 -> dt<=0.00037
-const int TS = 1000000;  //number of time steps
+const int TS = 10000;  //number of time steps
 const double dt = 0.00005; //0.0003
+const int frame_every = 1000; //write a frame (NNN.dat) every this many steps
 
 /*****cvel warm-up ramp*******/
 //a freshly-placed (random) particle field has large local density variance;
@@ -118,8 +132,8 @@ vector<Offset> drop_offsets(){
 
 const int Ndrop = (int)drop_offsets().size();
 
-int N = N1+N2+Ndrop;
-double VolT = Volwater + Volpetroleum;
+const int N = N1+N2+Ndrop;
+const double VolT = Volwater + Volpetroleum;
 const double h_water_ref = pow(315*Volwater*kernel_vol_const/(64*M_PI*N1),0.3333); //water smoothing length, reused as a lengthscale outside the Particle class
 
 /******Boundary repulsion parameters******/
@@ -156,6 +170,8 @@ inline double min_image_x(double dx){
   if(!periodic_x) return dx;
   return dx - box_Lx*round(dx/box_Lx);
 }
+
+#include "rocks.h" //the rocks: needs the wall and periodic definitions above
 
 //caps a single surface-tension contribution's acceleration magnitude: the CSF
 //normal estimate is noisy at a sparsely-sampled free surface, and the kernel
@@ -223,7 +239,6 @@ public:
   void ramp_cvel(double frac);
   void reinit();
   double kin_energy();
-  friend void initial_cond(Particle *body, string fig);
   friend void press_calc(Particle *body);
   friend void color_calc(Particle *body);
   friend void forces(Particle *body, boundaries& limit);
@@ -285,8 +300,8 @@ void Particle::ramp_cvel(double frac){
 
 void Particle::reinit(){
   pressure = 0.0;
-  memset( normal, 0.0, sizeof(normal) );   //.eq. normal[0] = normal[1] = normal[2] = 0.0;
-  memset( a, 0.0, sizeof(a) );  //.eq. body[i].a[0]=body[i].a[1]=body[i].a[2]=0.0;
+  fill( normal, normal+3, 0.0 );
+  fill( a, a+3, 0.0 );
   neighbourlist.resize(0);
 }
 
@@ -350,7 +365,7 @@ void initial_cond(string fig, Particle *body, int phases){
       body[i].r[0] = -dim + (ix+0.5)*spacing + jit*(2*((double)rand()/(RAND_MAX)) - 1.0);
       body[i].r[1] = -dim + (iy+0.5)*spacing + jit*(2*((double)rand()/(RAND_MAX)) - 1.0);
       body[i].r[2] =        (iz+0.5)*spacing + jit*(2*((double)rand()/(RAND_MAX)) - 1.0);
-      memset( body[i].v, 0.0, sizeof(body[i].v) );
+      fill( body[i].v, body[i].v+3, 0.0 );
     }
   }
   
@@ -364,7 +379,7 @@ void initial_cond(string fig, Particle *body, int phases){
     for(int i=0; i<N; i++ ){
       body[i].setdensity(0.0);
       body[i].reinit();
-      memset( body[i].v, 0.0, sizeof(body[i].v) );
+      fill( body[i].v, body[i].v+3, 0.0 );
       body[i].r[0] = (2*((double)rand()/(RAND_MAX)) - 1.0)*dim;//(-dim,dim)
       body[i].r[1] = (2*((double)rand()/(RAND_MAX)) - 1.0)*dim;//(-dim,dim)
       if(i < N1){
@@ -430,7 +445,7 @@ void initial_cond(string fig, Particle *body, int phases){
       int i = Nfile + (int)k;
       body[i].setdensity(0.0);
       body[i].reinit();
-      memset( body[i].v, 0.0, sizeof(body[i].v) );
+      fill( body[i].v, body[i].v+3, 0.0 );
       body[i].setphase(1);//water
       body[i].r[0] = dropX + off[k].x*s_water;
       body[i].r[1] = dropY + off[k].y*s_water;
@@ -441,8 +456,6 @@ void initial_cond(string fig, Particle *body, int phases){
 
 void press_calc(Particle *body){
   //to make the code faster I calculate the density and the pressure in the same loop
-  double dr0, dr1, dr2, normdr;
-  int i;
 #pragma omp parallel for
   for(int i=0; i<N; i++){
     body[i].reinit();
@@ -495,21 +508,22 @@ void press_calc(Particle *body){
     int cx = (int)((body[k].r[0]-xmin)/cellsize_x);
     int cy = (int)((body[k].r[1]-ymin)/cellsize);
     int cz = (int)((body[k].r[2]-zmin)/cellsize);
-    if(cx<0) cx=0; if(cx>=nx) cx=nx-1;//clamp: rounding at the extremes must not index out of bounds
-    if(cy<0) cy=0; if(cy>=ny) cy=ny-1;
-    if(cz<0) cz=0; if(cz>=nz) cz=nz-1;
+    cx = clamp(cx, 0, nx-1);//rounding at the extremes must not index out of bounds
+    cy = clamp(cy, 0, ny-1);
+    cz = clamp(cz, 0, nz-1);
     cells[cx + nx*(cy + ny*cz)].push_back(k);
   }
 
-#pragma omp parallel for private(dr0,dr1,dr2,normdr,i)
-  for(i=0; i<N; i++) {
+#pragma omp parallel for
+  for(int i=0; i<N; i++) {
+    double dr0, dr1, dr2, normdr;
     double rhoi = 0.0;//accumulate locally, flush once: see the note in forces()
     int cx = (int)((body[i].r[0]-xmin)/cellsize_x);
     int cy = (int)((body[i].r[1]-ymin)/cellsize);
     int cz = (int)((body[i].r[2]-zmin)/cellsize);
-    if(cx<0) cx=0; if(cx>=nx) cx=nx-1;//must match the binning clamp above
-    if(cy<0) cy=0; if(cy>=ny) cy=ny-1;
-    if(cz<0) cz=0; if(cz>=nz) cz=nz-1;
+    cx = clamp(cx, 0, nx-1);//must match the binning clamp above
+    cy = clamp(cy, 0, ny-1);
+    cz = clamp(cz, 0, nz-1);
     for(int dx=-1; dx<=1; dx++){
       int nxc = cx+dx;
       if(periodic_x) nxc = (nxc + nx) % nx;//wrap across the periodic seam
@@ -556,8 +570,9 @@ void press_calc(Particle *body){
   for(int i=0; i<N; i++){
     gamma[i] = body[i].mass/body[i].density*kernel_cubic( body[i].h, 0.0 );
   }
-#pragma omp parallel for private(dr0,dr1,dr2,normdr,i)
-  for(i=0; i<N; i++){
+#pragma omp parallel for
+  for(int i=0; i<N; i++){
+    double dr0, dr1, dr2, normdr;
     double gi = 0.0;//accumulate locally, flush once: see the note in forces()
     for(size_t k=0; k<body[i].neighbourlist.size(); k++){
       int neigh = body[i].neighbourlist[k];
@@ -588,15 +603,14 @@ void press_calc(Particle *body){
 
 
 void color_calc(Particle *body){
-  double dr0,dr1,dr2,normdr;
-  int neigh, i;
   //color calculations
-#pragma omp parallel for private(dr0,dr1,dr2,normdr,neigh,i)
-  for(i=0; i<N; i++) {
+#pragma omp parallel for
+  for(int i=0; i<N; i++) {
+    double dr0, dr1, dr2, normdr;
     //accumulate locally, flush once: see the note in forces()
     double ni0 = 0.0, ni1 = 0.0, ni2 = 0.0;
-    for(int j=0; j<body[i].neighbourlist.size(); j++){
-      neigh = body[i].neighbourlist[j];
+    for(size_t j=0; j<body[i].neighbourlist.size(); j++){
+      int neigh = body[i].neighbourlist[j];
 
       if(body[i].phase == body[neigh].phase){
         dr0 = min_image_x( body[i].r[0] - body[neigh].r[0] );
@@ -636,13 +650,11 @@ void color_calc(Particle *body){
 void forces(Particle *body, boundaries& limit){
   press_calc(body);
   color_calc(body);
-  double dr0,dr1,dr2,normdr,prhoi,prhoj;
-  double dv0,dv1,dv2;
-  double normnormali, normnormalj;
-  int neigh,i;
-
-#pragma omp parallel for private(dr0,dr1,dr2,normdr,prhoi,prhoj,normnormali,normnormalj,dv0,dv1,dv2,neigh,i)
-  for(i=0; i<N; i++){
+#pragma omp parallel for
+  for(int i=0; i<N; i++){
+    double dr0, dr1, dr2, normdr, prhoj;
+    double dv0, dv1, dv2;
+    double normnormali, normnormalj;
     //accumulate particle i's own share locally and flush it once at the end of
     //the loop body. Writing body[i].a directly is a data race: another thread
     //handling a lower-indexed particle reaches i through its neighbourlist and
@@ -650,9 +662,9 @@ void forces(Particle *body, boundaries& limit){
     //access loses updates -- which breaks Newton's third law at random and
     //injects momentum and energy.
     double ai0 = 0.0, ai1 = 0.0, ai2 = 0.0;
-    prhoi = body[i].pressure/( body[i].density*body[i].density );
-    for(int j=0; j<body[i].neighbourlist.size(); j++){
-      neigh = body[i].neighbourlist[j];
+    double prhoi = body[i].pressure/( body[i].density*body[i].density );
+    for(size_t j=0; j<body[i].neighbourlist.size(); j++){
+      int neigh = body[i].neighbourlist[j];
 
       prhoj = body[neigh].pressure/( body[neigh].density*body[neigh].density );
       
@@ -703,7 +715,7 @@ void forces(Particle *body, boundaries& limit){
       
       //Physical viscosity, Morris et al. (1997).
       //This replaces the Mueller form, which needed a THIRD kernel family
-      //(DDkernel_vis) purely to supply a Laplacian. Morris builds the same
+      //(DDkernel_vis, since removed) purely to supply a Laplacian. Morris builds the same
       //Laplacian out of the first derivative of the kernel already in use --
       //(r . grad W)/(r^2 + eta^2) is the Brookshaw estimator -- so the whole
       //solver now differentiates one and only one W.
@@ -810,6 +822,11 @@ void forces(Particle *body, boundaries& limit){
             - wall_repulsion(limit.boundaryY[1]-body[i].r[1], boundary_r0, boundary_D) )*body[i].density;
     ai2 += ( wall_repulsion(body[i].r[2]-limit.boundaryZ[0], boundary_r0, boundary_D)
             - wall_repulsion(limit.boundaryZ[1]-body[i].r[2], boundary_r0, boundary_D) )*body[i].density;
+    double frock[3];
+    rock_force(body[i].r, frock);//rocks repel like the walls, see rocks.h
+    ai0 += frock[0]*body[i].density;
+    ai1 += frock[1]*body[i].density;
+    ai2 += frock[2]*body[i].density;
 
     #pragma omp atomic
     body[i].a[0] += ai0;
@@ -931,6 +948,7 @@ void useboundaries(Particle& body, boundaries& limit){
     body.r[2] = limit.boundaryZ[1];
     if(body.v[2] > 0.0) body.v[2] = 0.0;
   }
+  rock_clamp(body.r, body.v);//same safety net for the rocks, see rocks.h
 }
 
 void initialize(Particle *body, boundaries& limit, int phases, string shape){
@@ -946,14 +964,14 @@ void initialize(Particle *body, boundaries& limit, int phases, string shape){
     zheight = dropZ + drop_radius_cells*pow(Volwater/N1, 1.0/3.0) + 4.0*h_water_ref;
   }
   limit.set_boundaries("cube", dim, zheight);
+  setup_rocks(dim);//after set_boundaries: needs box_Lx for the periodic distances
   initial_cond(shape, body, phases);
 }
 
 void verlet(Particle *body, boundaries& limit, double dt, unsigned int cycle){
-  int i;
   if(cycle == 1){
-#pragma omp parallel for private(i)
-    for(i=0;i<N;i++){
+#pragma omp parallel for
+    for(int i=0;i<N;i++){
       for(int j=0;j<3;j++){
 	body[i].v[j] += 0.5*dt*body[i].a[j];
 	body[i].r[j] += dt*body[i].v[j];
@@ -962,11 +980,11 @@ void verlet(Particle *body, boundaries& limit, double dt, unsigned int cycle){
     }
   }
   if(cycle == 2) {
-#pragma omp parallel for private(i)
-    for(i=0;i<N;i++){
+#pragma omp parallel for
+    for(int i=0;i<N;i++){
       for(int j=0;j<3;j++){
-	body[i].v[j] += 0.5*dt*body[i].a[j];
-      }	
+	      body[i].v[j] += 0.5*dt*body[i].a[j];
+      }
       useboundaries(body[i], limit);
       //density is not reset here: press_calc overwrites it at the start of the
       //next step anyway, and zeroing it made the value unusable for diagnostics
@@ -1012,27 +1030,26 @@ void kinetic_E(Particle *body, int count){
 
 int main(){
   srand(0);  //srand((unsigned)time(0)) 
-  Particle * liquid;
-  liquid =new Particle [N];
+  vector<Particle> particles(N);
+  Particle *liquid = particles.data();
   boundaries limit;
   unsigned int phases = 1;
   int count=0;
   //"cube" places all N particles uniformly in the box, whose volume is exactly
-  //VolT, so the run starts at rest density everywhere. 000.data cannot be used
-  //until it is regenerated: it is a snapshot of the blown-up state (z up to
-  //3.47) and does not fit the corrected z<=0.63 box.
+  //VolT, so the run starts at rest density everywhere. "file" reads 000.data,
+  //a settled N1+N2 state (see initial_cond).
   initialize(liquid, limit, phases, "file"); //cube, sphere, file or layered
   for(int ts=0;ts<TS; ts++){
     double cvel_frac = (ts < cvel_ramp_steps) ? (double)ts/cvel_ramp_steps : 1.0;
 #pragma omp parallel for
     for(int i=0; i<N; i++) liquid[i].ramp_cvel(cvel_frac);
+    rock_grow(ts);//rocks grow in over the first steps, see rocks.h
     verlet(liquid, limit, dt, 1);
     forces(liquid, limit);
     verlet(liquid, limit, dt, 2);
-    if(ts%1000 ==0){
+    if(ts%frame_every ==0){
       count++;
       kinetic_E(liquid,count);
     }
   }
-  delete [] liquid;
 }

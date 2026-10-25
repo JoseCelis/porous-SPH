@@ -1,0 +1,30 @@
+# Template rock shape for sph.cpp, read at startup by rocks.h (no rebuild needed).
+# Every rock is a copy of this shape, moved, scaled by its size and rotated
+# (see rocks.csv, or the "random" settings in rocks.h).
+#
+# The shape is a convex polyhedron given by its face planes, one face per row:
+#   nx, ny, nz : the face's OUTWARD normal (any length, it is normalised)
+#   d          : the face's distance from the rock centre, in metres at size 1 (> 0)
+# A point p is inside the rock when  nhat.p <= d  for every face. The corners
+# are not listed: they are wherever three planes meet, and are computed.
+#
+# Rules: at least 4 faces, every d > 0 (the centre is inside), and the faces
+# must close the shape in every direction (rocks.h stops with an error if not).
+# Any convex shape works; e.g. the six box rows alone give a box.
+nx,ny,nz,d
+# six uneven box faces
+1,0,0,0.20
+-1,0,0,0.18
+0,1,0,0.17
+0,-1,0,0.20
+0,0,1,0.15
+0,0,-1,0.16
+# eight corner cuts, uneven so it looks like a rock rather than a crystal
+1,1,1,0.24
+-1,1,1,0.22
+1,-1,1,0.23
+-1,-1,1,0.21
+1,1,-1,0.25
+-1,1,-1,0.23
+1,-1,-1,0.22
+-1,-1,-1,0.24
