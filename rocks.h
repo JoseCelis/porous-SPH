@@ -2,19 +2,31 @@
 //
 //Everything about the rocks lives here: their shape, how many there are and
 //where (rock_mode, rocks.csv or n_rocks), the geometry, and the hooks sph.cpp calls:
-//  setup_rocks(dim)   in initialize():    builds the rocks, writes rocks.txt
-//  rock_grow(ts)      in main():          the growth ramp at the start of a run
-//  rock_force(r, f)   in forces():        wall-style repulsion from every rock
-//  rock_clamp(r, v)   in useboundaries(): dissipative safety net, like the walls
+//  setup_rocks(dim, steps_per_frame) in initialize():    builds the rocks, writes rocks.txt
+//  rock_grow(ts)                     in main():          the growth ramp at the start of a run
+//  rock_force(r, r0, D, f)           in forces():        wall-style repulsion from every rock
+//  rock_clamp(r, v)                  in useboundaries(): dissipative safety net, like the walls
 //
-//Not self-contained, unlike kernel.h: it uses the box/wall definitions in
-//sph.cpp (wall_repulsion, boundary_r0, boundary_D, periodic_x, min_image_x,
-//wrap_x, frame_every), so sph.cpp includes it right after those.
+//The box (periodic_x, min_image_x, wrap_x, wall_repulsion) comes from
+//geometry.h. The fluid-dependent wall parameters (boundary_r0, boundary_D) and
+//the frame interval stay in sph.cpp and are passed in as arguments.
 #ifndef ROCKS_H
 #define ROCKS_H
 
-#include <random>
+#include "geometry.h"
+
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <random>
+#include <sstream>
+#include <string>
+#include <vector>
 
 /******Static polyhedral obstacles (rocks)******/
 //Convex polyhedra fixed in the fluid, treated exactly like the box walls:
@@ -45,7 +57,7 @@ const char rock_file[] = "rocks.csv"; //"file" mode, read from the current direc
 const int n_rocks = 8;                //"random" mode only
 
 const char rock_shape_file[] = "rock_shape.csv"; //template shape, read from the current directory
-vector< array<double,4> > rock_faces; //{nx, ny, nz, d} per face, filled by load_rock_shape()
+std::vector< std::array<double,4> > rock_faces; //{nx, ny, nz, d} per face, filled by load_rock_shape()
 
 //"random" mode settings
 const unsigned int rock_seed = 1;
@@ -65,11 +77,11 @@ double rock_scale = 1.0; //0..1, set each step in main()
 //  n[k].(p - c) <= d[k]  for every face k  (n unit and already rotated)
 struct Rock {
   double c[3];
-  vector< array<double,3> > n;
-  vector<double> d;
+  std::vector< std::array<double,3> > n;
+  std::vector<double> d;
   double radius; //bounding radius about c, used to keep rocks apart
 };
-vector<Rock> rocks; //filled by setup_rocks()
+std::vector<Rock> rocks; //filled by setup_rocks()
 
 //Distance from r to rock R's surface (negative inside) and, in n_out, the
 //outward unit normal of the face that sets it. For a convex polyhedron the
@@ -95,43 +107,43 @@ inline double rock_distance(const Rock& R, const double r[3], double n_out[3]){
 //header row (any row whose first field is not a number).
 void load_rock_shape(){
   rock_faces.clear();
-  ifstream file(rock_shape_file);
+  std::ifstream file(rock_shape_file);
   if(!file.is_open()){
-    cerr<<"load_rock_shape: could not open "<<rock_shape_file<<endl;
+    std::cerr<<"load_rock_shape: could not open "<<rock_shape_file<<std::endl;
     exit(1);
   }
-  string line;
+  std::string line;
   int lineno = 0;
-  while( getline(file, line) ){
+  while( std::getline(file, line) ){
     lineno++;
     size_t first = line.find_first_not_of(" \t\r");
-    if(first == string::npos || line[first] == '#') continue;
+    if(first == std::string::npos || line[first] == '#') continue;
     for(size_t k=0; k<line.size(); k++) if(line[k] == ',') line[k] = ' ';
-    stringstream ss(line);
-    array<double,4> f;
+    std::stringstream ss(line);
+    std::array<double,4> f;
     int nread = 0;
     while( nread < 4 && ss>>f[nread] ) nread++;
     if(nread == 0) continue;//header row
-    string extra;
+    std::string extra;
     if(nread < 4 || ss>>extra){
-      cerr<<"load_rock_shape: "<<rock_shape_file<<" line "<<lineno<<": expected 4 numbers "
-          <<"(nx, ny, nz, d), got: "<<line<<endl;
+      std::cerr<<"load_rock_shape: "<<rock_shape_file<<" line "<<lineno<<": expected 4 numbers "
+          <<"(nx, ny, nz, d), got: "<<line<<std::endl;
       exit(1);
     }
     if( f[0]*f[0] + f[1]*f[1] + f[2]*f[2] < 1e-20 ){
-      cerr<<"load_rock_shape: "<<rock_shape_file<<" line "<<lineno<<": the normal is zero"<<endl;
+      std::cerr<<"load_rock_shape: "<<rock_shape_file<<" line "<<lineno<<": the normal is zero"<<std::endl;
       exit(1);
     }
     if(f[3] <= 0.0){
-      cerr<<"load_rock_shape: "<<rock_shape_file<<" line "<<lineno
-          <<": d must be > 0 (the rock centre must be inside every face)"<<endl;
+      std::cerr<<"load_rock_shape: "<<rock_shape_file<<" line "<<lineno
+          <<": d must be > 0 (the rock centre must be inside every face)"<<std::endl;
       exit(1);
     }
     rock_faces.push_back(f);
   }
   if(rock_faces.size() < 4){
-    cerr<<"load_rock_shape: "<<rock_shape_file<<" has "<<rock_faces.size()
-        <<" faces; a closed polyhedron needs at least 4"<<endl;
+    std::cerr<<"load_rock_shape: "<<rock_shape_file<<" has "<<rock_faces.size()
+        <<" faces; a closed polyhedron needs at least 4"<<std::endl;
     exit(1);
   }
   //The faces must close the shape: the rock is infinite along a direction u
@@ -144,8 +156,8 @@ void load_rock_shape(){
   bool any_pair = false;
   for(int a=0; a<nf; a++)
     for(int b=a+1; b<nf; b++){
-      const array<double,4>& A = rock_faces[a];
-      const array<double,4>& B = rock_faces[b];
+      const std::array<double,4>& A = rock_faces[a];
+      const std::array<double,4>& B = rock_faces[b];
       double c[3] = { A[1]*B[2]-A[2]*B[1], A[2]*B[0]-A[0]*B[2], A[0]*B[1]-A[1]*B[0] };
       double cn = sqrt( c[0]*c[0] + c[1]*c[1] + c[2]*c[2] );
       if(cn < 1e-12) continue;//parallel faces: no edge direction
@@ -154,19 +166,19 @@ void load_rock_shape(){
         double u[3] = { sgn*c[0]/cn, sgn*c[1]/cn, sgn*c[2]/cn };
         double best = -1.0;
         for(int k=0; k<nf; k++){
-          const array<double,4>& f = rock_faces[k];
+          const std::array<double,4>& f = rock_faces[k];
           double nn = sqrt( f[0]*f[0] + f[1]*f[1] + f[2]*f[2] );
-          best = max(best, ( f[0]*u[0] + f[1]*u[1] + f[2]*u[2] )/nn);
+          best = std::max(best, ( f[0]*u[0] + f[1]*u[1] + f[2]*u[2] )/nn);
         }
         if(best <= 1e-9){
-          cerr<<"load_rock_shape: the faces in "<<rock_shape_file<<" do not close the shape: "
-              <<"it is open towards ("<<u[0]<<", "<<u[1]<<", "<<u[2]<<")"<<endl;
+          std::cerr<<"load_rock_shape: the faces in "<<rock_shape_file<<" do not close the shape: "
+              <<"it is open towards ("<<u[0]<<", "<<u[1]<<", "<<u[2]<<")"<<std::endl;
           exit(1);
         }
       }
     }
   if(!any_pair){
-    cerr<<"load_rock_shape: all faces in "<<rock_shape_file<<" are parallel; the shape is not closed"<<endl;
+    std::cerr<<"load_rock_shape: all faces in "<<rock_shape_file<<" are parallel; the shape is not closed"<<std::endl;
     exit(1);
   }
 }
@@ -203,7 +215,7 @@ Rock make_rock(const double c[3], double size, const double Q[3][3]){
         bool inside = true;
         for(int k=0; k<nf && inside; k++)
           if( R.n[k][0]*x[0] + R.n[k][1]*x[1] + R.n[k][2]*x[2] > R.d[k] + 1e-9 ) inside = false;
-        if(inside) rmax = max(rmax, sqrt( x[0]*x[0] + x[1]*x[1] + x[2]*x[2] ));
+        if(inside) rmax = std::max(rmax, sqrt( x[0]*x[0] + x[1]*x[1] + x[2]*x[2] ));
       }
   R.radius = rmax;
   return R;
@@ -223,8 +235,8 @@ void yaw_tilt(double yaw_deg, double tilt_deg, double Q[3][3]){
 }
 
 //uniformly random rotation, from a random unit quaternion
-void random_rotation(mt19937& gen, double Q[3][3]){
-  normal_distribution<double> g(0.0, 1.0);
+void random_rotation(std::mt19937& gen, double Q[3][3]){
+  std::normal_distribution<double> g(0.0, 1.0);
   double q[4], nq = 0.0;
   for(int i=0; i<4; i++){ q[i] = g(gen); nq += q[i]*q[i]; }
   nq = sqrt(nq);
@@ -236,8 +248,9 @@ void random_rotation(mt19937& gen, double Q[3][3]){
   memcpy(Q, M, sizeof(M));
 }
 
-//Fills `rocks` and writes rocks.txt. dim = box half-width in x and y.
-void setup_rocks(double dim){
+//Fills `rocks` and writes rocks.txt. dim = box half-width in x and y;
+//steps_per_frame is only recorded in rocks.txt, for render_pyvista.py.
+void setup_rocks(double dim, int steps_per_frame){
   rocks.clear();
   if( strcmp(rock_mode, "none") != 0 ) load_rock_shape();
   if( strcmp(rock_mode, "none") == 0 ){
@@ -247,31 +260,31 @@ void setup_rocks(double dim){
     //CSV, one rock per row: x, y, z, size, yaw_deg, tilt_deg. Lines starting
     //with # and blank lines are skipped, and so is a header row (any row
     //whose first field is not a number).
-    ifstream file(rock_file);
+    std::ifstream file(rock_file);
     if(!file.is_open()){
-      cerr<<"setup_rocks: could not open "<<rock_file<<" (rock_mode = \"file\")"<<endl;
+      std::cerr<<"setup_rocks: could not open "<<rock_file<<" (rock_mode = \"file\")"<<std::endl;
       exit(1);
     }
-    string line;
+    std::string line;
     int lineno = 0;
-    while( getline(file, line) ){
+    while( std::getline(file, line) ){
       lineno++;
       size_t first = line.find_first_not_of(" \t\r");
-      if(first == string::npos || line[first] == '#') continue;
+      if(first == std::string::npos || line[first] == '#') continue;
       for(size_t k=0; k<line.size(); k++) if(line[k] == ',') line[k] = ' ';
-      stringstream ss(line);
+      std::stringstream ss(line);
       double row[6];
       int nread = 0;
       while( nread < 6 && ss>>row[nread] ) nread++;
       if(nread == 0) continue;//header row
-      string extra;
+      std::string extra;
       if(nread < 6 || ss>>extra){
-        cerr<<"setup_rocks: "<<rock_file<<" line "<<lineno<<": expected 6 numbers "
-            <<"(x, y, z, size, yaw_deg, tilt_deg), got: "<<line<<endl;
+        std::cerr<<"setup_rocks: "<<rock_file<<" line "<<lineno<<": expected 6 numbers "
+            <<"(x, y, z, size, yaw_deg, tilt_deg), got: "<<line<<std::endl;
         exit(1);
       }
       if(row[3] <= 0.0){
-        cerr<<"setup_rocks: "<<rock_file<<" line "<<lineno<<": size must be > 0"<<endl;
+        std::cerr<<"setup_rocks: "<<rock_file<<" line "<<lineno<<": size must be > 0"<<std::endl;
         exit(1);
       }
       double Q[3][3];
@@ -280,14 +293,14 @@ void setup_rocks(double dim){
     }
   }
   else if( strcmp(rock_mode, "random") == 0 ){
-    mt19937 gen(rock_seed);//own generator: does not shift the rand() stream used elsewhere
-    uniform_real_distribution<double> u(0.0, 1.0);
+    std::mt19937 gen(rock_seed);//own generator: does not shift the rand() stream used elsewhere
+    std::uniform_real_distribution<double> u(0.0, 1.0);
     const int max_tries = 100000;
     int tries = 0;
     while( (int)rocks.size() < n_rocks ){
       if(++tries > max_tries){
-        cerr<<"setup_rocks: could only place "<<rocks.size()<<" of "<<n_rocks
-            <<" rocks without overlap. Lower n_rocks, rock_random_size or rock_min_gap."<<endl;
+        std::cerr<<"setup_rocks: could only place "<<rocks.size()<<" of "<<n_rocks
+            <<" rocks without overlap. Lower n_rocks, rock_random_size or rock_min_gap."<<std::endl;
         exit(1);
       }
       double Q[3][3];
@@ -299,7 +312,7 @@ void setup_rocks(double dim){
       //x is periodic when periodic_x, so only y and the floor need a wall margin
       double xlo = periodic_x ? -dim : -dim + margin, xhi = periodic_x ? dim : dim - margin;
       double ylo = -dim + margin, yhi = dim - margin;
-      double zlo = max(rock_random_z[0], margin), zhi = rock_random_z[1];
+      double zlo = std::max(rock_random_z[0], margin), zhi = rock_random_z[1];
       if(xlo >= xhi || ylo >= yhi || zlo >= zhi) continue;//this rock is too big for the box
       R.c[0] = xlo + u(gen)*(xhi-xlo);
       R.c[1] = ylo + u(gen)*(yhi-ylo);
@@ -313,35 +326,35 @@ void setup_rocks(double dim){
     }
   }
   else{
-    cerr<<"setup_rocks: unknown rock_mode \""<<rock_mode<<"\" (use \"file\", \"random\" or \"none\")"<<endl;
+    std::cerr<<"setup_rocks: unknown rock_mode \""<<rock_mode<<"\" (use \"file\", \"random\" or \"none\")"<<std::endl;
     exit(1);
   }
 
   //rocks.txt: what render_pyvista.py draws. Not *.dat, so the frame globs
   //(and `make fresh`) leave it alone.
-  ofstream f("rocks.txt");
-  f<<"# rocks used by sph.cpp. For each rock: its centre, then one line per face,"<<endl
-   <<"# \"nx ny nz d\" = outward unit normal and distance from the centre at full size."<<endl
-   <<"# The rocks grow from a point to full size over ramp_steps steps."<<endl;
-  f<<setprecision(10);
-  f<<"ramp_steps "<<rock_ramp_steps<<endl;
-  f<<"steps_per_frame "<<frame_every<<endl;
+  std::ofstream f("rocks.txt");
+  f<<"# rocks used by sph.cpp. For each rock: its centre, then one line per face,"<<std::endl
+   <<"# \"nx ny nz d\" = outward unit normal and distance from the centre at full size."<<std::endl
+   <<"# The rocks grow from a point to full size over ramp_steps steps."<<std::endl;
+  f<<std::setprecision(10);
+  f<<"ramp_steps "<<rock_ramp_steps<<std::endl;
+  f<<"steps_per_frame "<<steps_per_frame<<std::endl;
   for(size_t i=0; i<rocks.size(); i++){
-    f<<"rock "<<rocks[i].c[0]<<" "<<rocks[i].c[1]<<" "<<rocks[i].c[2]<<endl;
+    f<<"rock "<<rocks[i].c[0]<<" "<<rocks[i].c[1]<<" "<<rocks[i].c[2]<<std::endl;
     for(size_t k=0; k<rocks[i].d.size(); k++)
-      f<<rocks[i].n[k][0]<<" "<<rocks[i].n[k][1]<<" "<<rocks[i].n[k][2]<<" "<<rocks[i].d[k]<<endl;
+      f<<rocks[i].n[k][0]<<" "<<rocks[i].n[k][1]<<" "<<rocks[i].n[k][2]<<" "<<rocks[i].d[k]<<std::endl;
   }
-  cout<<"rocks: "<<rocks.size()<<" ("<<rock_mode<<"), written to rocks.txt"<<endl;
+  std::cout<<"rocks: "<<rocks.size()<<" ("<<rock_mode<<"), written to rocks.txt"<<std::endl;
 }
 
 //Acceleration on a particle at r from all rocks: the same wall_repulsion() as
-//the box walls, along the nearest face's outward normal. Returned in f (the
-//caller multiplies by density, like the wall terms).
-inline void rock_force(const double r[3], double f[3]){
+//the box walls (range r0, strength D), along the nearest face's outward
+//normal. Returned in f (the caller multiplies by density, like the wall terms).
+inline void rock_force(const double r[3], double r0, double D, double f[3]){
   f[0] = f[1] = f[2] = 0.0;
   for(size_t ir=0; ir<rocks.size(); ir++){
     double nr[3];
-    double frock = wall_repulsion( rock_distance(rocks[ir], r, nr), boundary_r0, boundary_D );
+    double frock = wall_repulsion( rock_distance(rocks[ir], r, nr), r0, D );
     f[0] += frock*nr[0];
     f[1] += frock*nr[1];
     f[2] += frock*nr[2];
