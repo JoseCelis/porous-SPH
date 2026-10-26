@@ -41,25 +41,43 @@
 //size 1. Any convex shape can be written this way.
 //
 //How many rocks, and where:
-//  rock_mode  : "file"   -> one rock per row of rock_file (rocks.csv): centre,
-//                           size and rotation. The number of rows is the
-//                           number of rocks. Read at startup, so editing the
-//                           file needs no rebuild.
-//               "random" -> n_rocks rocks with random centre, size and
-//                           orientation (seeded by rock_seed, so a run is
-//                           reproducible), none overlapping another rock or
-//                           a wall. See the rock_random_* settings.
-//               "none"   -> no rocks.
+//  rock_mode  : file   -> one rock per row of rock_file (rocks.csv): centre,
+//                         size and rotation. The number of rows is the
+//                         number of rocks. Read at startup, so editing the
+//                         file needs no rebuild.
+//               random -> n_rocks rocks with random centre, size and
+//                         orientation (seeded by rock_seed, so a run is
+//                         reproducible), none overlapping another rock or
+//                         a wall. See the rock_random_* settings.
+//               none   -> no rocks.
 //The final geometry is written to rocks.txt at startup; render_pyvista.py draws
 //the rocks from that file.
-const char rock_mode[] = "file"; //"file", "random" or "none"
-const char rock_file[] = "rocks.csv"; //"file" mode, read from the current directory like 000.data
-const int n_rocks = 8; //"random" mode only
+enum class RockMode {
+  none,
+  file,
+  random
+};
+const RockMode rock_mode = RockMode::file;
+const char rock_file[] = "rocks.csv"; //file mode, read from the current directory like 000.data
+const int n_rocks = 8; //random mode only
+
+//the mode's name, for the startup message
+inline const char *rock_mode_name(RockMode m) {
+  switch(m) {
+  case RockMode::none:
+    return "none";
+  case RockMode::file:
+    return "file";
+  case RockMode::random:
+    return "random";
+  }
+  return "?";
+}
 
 const char rock_shape_file[] = "rock_shape.csv"; //template shape, read from the current directory
 std::vector<std::array<double, 4>> rock_faces; //{nx, ny, nz, d} per face, filled by load_rock_shape()
 
-//"random" mode settings
+//random mode settings
 const unsigned int rock_seed = 1;
 const double rock_random_size[2] = {0.4, 0.8}; //size factor range
 const double rock_random_z[2] = {0.0, 0.63}; //range for the rock centres' z (the pool is 0.63 deep)
@@ -260,16 +278,14 @@ void random_rotation(std::mt19937 &gen, double Q[3][3]) {
 //steps_per_frame is only recorded in rocks.txt, for render_pyvista.py.
 void setup_rocks(double dim, int steps_per_frame) {
   rocks.clear();
-  if(strcmp(rock_mode, "none") != 0) load_rock_shape();
-  if(strcmp(rock_mode, "none") == 0) {
-    //nothing to build
-  } else if(strcmp(rock_mode, "file") == 0) {
+  if(rock_mode != RockMode::none) load_rock_shape();
+  if(rock_mode == RockMode::file) {
     //CSV, one rock per row: x, y, z, size, yaw_deg, tilt_deg. Lines starting
     //with # and blank lines are skipped, and so is a header row (any row
     //whose first field is not a number).
     std::ifstream file(rock_file);
     if(!file.is_open()) {
-      std::cerr << "setup_rocks: could not open " << rock_file << " (rock_mode = \"file\")" << std::endl;
+      std::cerr << "setup_rocks: could not open " << rock_file << " (rock_mode = RockMode::file)" << std::endl;
       exit(1);
     }
     std::string line;
@@ -299,7 +315,7 @@ void setup_rocks(double dim, int steps_per_frame) {
       yaw_tilt(row[4], row[5], Q);
       rocks.push_back(make_rock(row, row[3], Q));
     }
-  } else if(strcmp(rock_mode, "random") == 0) {
+  } else if(rock_mode == RockMode::random) {
     std::mt19937 gen(rock_seed); //own generator: does not shift init_rng in sph.cpp
     std::uniform_real_distribution<double> u(0.0, 1.0);
     const int max_tries = 100000;
@@ -331,10 +347,7 @@ void setup_rocks(double dim, int steps_per_frame) {
       }
       if(clear) rocks.push_back(R);
     }
-  } else {
-    std::cerr << "setup_rocks: unknown rock_mode \"" << rock_mode << "\" (use \"file\", \"random\" or \"none\")" << std::endl;
-    exit(1);
-  }
+  } //RockMode::none: nothing to build
 
   //rocks.txt: what render_pyvista.py draws. Not *.dat, so the frame globs
   //(and `make fresh`) leave it alone.
@@ -350,7 +363,7 @@ void setup_rocks(double dim, int steps_per_frame) {
     for(size_t k = 0; k < rocks[i].d.size(); k++)
       f << rocks[i].n[k][0] << " " << rocks[i].n[k][1] << " " << rocks[i].n[k][2] << " " << rocks[i].d[k] << std::endl;
   }
-  std::cout << "rocks: " << rocks.size() << " (" << rock_mode << "), written to rocks.txt" << std::endl;
+  std::cout << "rocks: " << rocks.size() << " (" << rock_mode_name(rock_mode) << "), written to rocks.txt" << std::endl;
 }
 
 //Acceleration on a particle at r from all rocks: the same wall_repulsion() as

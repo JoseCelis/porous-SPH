@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
-#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -86,9 +85,9 @@ const int N1 = 5500; //number of particles
 const int N2 = 5500;
 
 /******Random initial conditions******/
-//One generator for every random draw in the set-up: the "cube" jitter, the
-//"layered" positions, and the random phase in setparams() when phases != 1.
-//The seed is fixed, so a run is reproducible. The "file" start draws nothing.
+//One generator for every random draw in the set-up: the cube jitter, the
+//layered positions, and the random phase in setparams() when phases != 1.
+//The seed is fixed, so a run is reproducible. The file start draws nothing.
 //rocks.h has its own generator (rock_seed), so the two never shift each other.
 const unsigned int init_seed = 0;
 mt19937 init_rng(init_seed);
@@ -98,15 +97,20 @@ inline double uniform01() {
 }
 
 /******Water drop released above the equilibrium pool*******/
-//Shape of the drop: "sphere", "cube", or "none". Use "none" for the settling
-//pass that generates 000.data: the file reader expects exactly N1+N2 rows, so
-//the run that writes it must not carry any drop particles.
+//Shape of the drop: sphere, cube, or none. Use none for the settling pass that
+//generates 000.data: the file reader expects exactly N1+N2 rows, so the run
+//that writes it must not carry any drop particles.
 //Otherwise the particles sit on a
 //simple-cubic lattice at the water particle's own rest spacing
 //s = (Volwater/N1)^(1/3), so the drop starts at the pool's density rather than
 //artificially compressed or dilute, and the offsets are exactly symmetric under
 //reflection through the drop centre in all three axes (no random jitter).
-const char drop_shape[] = "none";
+enum class DropShape {
+  none,
+  sphere,
+  cube
+};
+const DropShape drop_shape = DropShape::none;
 //Drop radius in lattice cells. The kernel support is 2 cells (h/s = 2), so a
 //drop of radius 1 or 2 is essentially all surface: its density sum never
 //reaches rhozero, the EOS pressure clamps to 0, and it disperses in flight
@@ -125,9 +129,9 @@ struct Offset {
 //the placement loop.
 vector<Offset> drop_offsets() {
   vector<Offset> off;
-  if(strcmp(drop_shape, "none") == 0) return off; //no drop: Ndrop == 0
+  if(drop_shape == DropShape::none) return off; //no drop: Ndrop == 0
   const int R = drop_radius_cells;
-  const bool sphere = (strcmp(drop_shape, "sphere") == 0);
+  const bool sphere = (drop_shape == DropShape::sphere);
   for(int ix = -R; ix <= R; ix++)
     for(int iy = -R; iy <= R; iy++)
       for(int iz = -R; iz <= R; iz++) {
@@ -302,38 +306,43 @@ double Particle::kin_energy() {
   return 0.5 * mass * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
 }
 
+//The box: walls at x,y = +-dim (none in x when periodic_x), floor at z = 0,
+//ceiling at zheight.
 class boundaries {
 private:
-  string figure;
-  double boundaryX[2], boundaryY[2], boundaryZ[2], rad;
+  double boundaryX[2], boundaryY[2], boundaryZ[2];
 
 public:
-  void set_boundaries(string fig, double dim, double zheight);
+  void set_boundaries(double dim, double zheight);
   friend void useboundaries(Particle &body, boundaries &limit);
   friend void forces(Particle *body, boundaries &limit);
   friend int main();
 };
 
-void boundaries::set_boundaries(string fig, double dim, double zheight) {
-  figure = fig;
-  if(fig == "cube") {
-    boundaryX[0] = -dim;
-    boundaryX[1] = dim;
-    boundaryY[0] = -dim;
-    boundaryY[1] = dim;
-    boundaryZ[0] = 0.0;
-    boundaryZ[1] = zheight;
-    box_x0 = boundaryX[0];
-    box_Lx = boundaryX[1] - boundaryX[0];
-  }
-  if(fig == "sphere") {
-    rad = dim;
-  }
+void boundaries::set_boundaries(double dim, double zheight) {
+  boundaryX[0] = -dim;
+  boundaryX[1] = dim;
+  boundaryY[0] = -dim;
+  boundaryY[1] = dim;
+  boundaryZ[0] = 0.0;
+  boundaryZ[1] = zheight;
+  box_x0 = boundaryX[0];
+  box_Lx = boundaryX[1] - boundaryX[0];
 }
 
-void initial_cond(string fig, Particle *body, int phases) {
+//How the particles start (the argument of initialize() in main()):
+//  file    -> read the settled state in 000.data (N1+N2 rows), plus the drop
+//  cube    -> all N particles on a jittered lattice filling the box's lower half
+//  layered -> petroleum at the bottom, water on top, at random positions
+enum class InitialState {
+  file,
+  cube,
+  layered
+};
 
-  if(fig == "cube") {
+void initial_cond(InitialState state, Particle *body, int phases) {
+
+  if(state == InitialState::cube) {
     //dim must match the box set by set_boundaries so particles are placed
     //inside the actual domain instead of outside its walls
     const double dim = box_dim;
@@ -361,7 +370,7 @@ void initial_cond(string fig, Particle *body, int phases) {
     }
   }
 
-  if(fig == "layered") {
+  if(state == InitialState::layered) {
     //petroleum starts at the bottom, water on top: the opposite of the buoyant
     //equilibrium, so the swap is visible as the simulation runs.
     //dim must match the box set by set_boundaries so the placement volume
@@ -384,7 +393,7 @@ void initial_cond(string fig, Particle *body, int phases) {
     }
   }
 
-  if(fig == "file") {
+  if(state == InitialState::file) {
     //Parse line by line with the commas turned into whitespace. Reading the
     //separator with `file>>comma` into a string only works when the commas are
     //themselves surrounded by spaces: against "x,y,z" the string extraction
@@ -930,21 +939,21 @@ void useboundaries(Particle &body, boundaries &limit) {
   rock_clamp(body.r, body.v); //same safety net for the rocks, see rocks.h
 }
 
-void initialize(Particle *body, boundaries &limit, int phases, string shape) {
+void initialize(Particle *body, boundaries &limit, int phases, InitialState state) {
   const double dim = box_dim;
   //Ceiling at 2*dim: the fluid occupies the lower half, so it has a real free
   //surface to relieve the inward push of the wall repulsion. At zheight==dim it
   //exactly fills the box and the boundary force can only compress it; at
   //dropZ+0.5 it had 5.5x its own volume to spread into.
   double zheight = 2.0 * dim;
-  if(shape == "file" && Ndrop > 0) {
+  if(state == InitialState::file && Ndrop > 0) {
     //raise the ceiling clear of the drop: its own top, plus a few smoothing
     //lengths so the ceiling repulsion is not touching it at release
     zheight = dropZ + drop_radius_cells * s_water + 4.0 * h_water_ref;
   }
-  limit.set_boundaries("cube", dim, zheight);
+  limit.set_boundaries(dim, zheight);
   setup_rocks(dim, frame_every); //after set_boundaries: needs box_Lx for the periodic distances
-  initial_cond(shape, body, phases);
+  initial_cond(state, body, phases);
 }
 
 void verlet(Particle *body, boundaries &limit, double dt, unsigned int cycle) {
@@ -1011,10 +1020,10 @@ int main() {
   boundaries limit;
   unsigned int phases = 1;
   int count = 0;
-  //"cube" places all N particles uniformly in the box, whose volume is exactly
-  //VolT, so the run starts at rest density everywhere. "file" reads 000.data,
-  //a settled N1+N2 state (see initial_cond).
-  initialize(liquid, limit, phases, "file"); //cube, sphere, file or layered
+  //cube places all N particles uniformly in the box, whose volume is exactly
+  //VolT, so the run starts at rest density everywhere. file reads 000.data,
+  //a settled N1+N2 state (see InitialState).
+  initialize(liquid, limit, phases, InitialState::file); //file, cube or layered
   for(int ts = 0; ts < TS; ts++) {
     double cvel_frac = (ts < cvel_ramp_steps) ? (double)ts / cvel_ramp_steps : 1.0;
 #pragma omp parallel for
