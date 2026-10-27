@@ -17,7 +17,7 @@ using namespace std;
 
 /*******time parameteres******/
 //dt set by CFL: dt <= 0.4*h/cvel, h_water~0.0736, cvel=80 -> dt<=0.00037
-const int TS = 100000; //number of time steps
+const int n_steps = 100000; //number of time steps
 const double dt = 0.00005; //0.0003
 const int frame_every = 1000; //write a frame (NNN.dat) every this many steps
 
@@ -29,34 +29,34 @@ const double cvel_ramp_start = 10.0;
 const int cvel_ramp_steps = 3000;
 
 /*****water fluid paramenters******/
-const double rhowater = 998.29; // kg/m^3
-const double Volwater = 0.5; //m^3
+const double rho_water = 998.29; // kg/m^3
+const double vol_water = 0.5; //m^3
 //Monaghan stiffness rule: cvel >= 10*Vmax; Vmax~6.8 m/s from the drop impact -> cvel>=68
-const double cvelwater = 80.0; //speed of sound of the fluid
-const double Gammawater = 7.0; //adiabatic constant
-const double muwater = 3.5; //viscosity
-const double buoyancywater = 0.0;
-const double sigmawater = 0.0728; //surface tension constant
-const double thresholdwater = 6.768; //was 7.065 for poly6; see the note on kernel_vol_const
-//buoyancy must stay 0: the explicit (rho-rhozero)*(-g) term double-counts the
-//buoyancy that the pressure gradient already produces from the rhozero
+const double cvel_water = 80.0; //speed of sound of the fluid
+const double gamma_water = 7.0; //adiabatic constant
+const double mu_water = 3.5; //viscosity
+const double buoyancy_water = 0.0;
+const double sigma_water = 0.0728; //surface tension constant
+const double threshold_water = 6.768; //was 7.065 for poly6; see the note on kernel_vol_const
+//buoyancy must stay 0: the explicit (rho-rho0)*(-g) term double-counts the
+//buoyancy that the pressure gradient already produces from the rho0
 //difference, and because it is divided by density it makes the *effective*
-//gravity -9.82*(2 - rhozero/rho). Any particle below half rest density then
+//gravity -9.82*(2 - rho0/rho). Any particle below half rest density then
 //accelerates upward, which is a runaway (dilute -> push up -> more dilute).
 
 /*****petroleum (crude oil) fluid parameters******/
 //medium crude, ~31 API at 20°C. Replaces the old light-oil phase, which ran at an
 //artificial 400 kg/m^3; at 870 the density contrast with water is only ~13%, so
 //the phases separate much more slowly than before.
-const double rhopetroleum = 870.0; // kg/m^3
-const double Volpetroleum = 0.5; // m^3
-const double cvelpetroleum = 80.0; // speed of sound of the fluid, matched to cvelwater for consistency
-const double Gammapetroleum = 7.0; // adiabatic constant
-//same scale as muwater (3.5 <-> water's 1 mPa·s): medium crude is ~10 mPa·s
-const double mupetroleum = 35.0; // viscosity
-const double buoyancypetroleum = 0.0; //see buoyancywater
-const double sigmapetroleum = 0.027; // surface tension constant, N/m (crude: ~0.025-0.030)
-const double thresholdpetroleum = 5.748; //was 6.0 for poly6; see the note on kernel_vol_const
+const double rho_petroleum = 870.0; // kg/m^3
+const double vol_petroleum = 0.5; // m^3
+const double cvel_petroleum = 80.0; // speed of sound of the fluid, matched to cvel_water for consistency
+const double gamma_petroleum = 7.0; // adiabatic constant
+//same scale as mu_water (3.5 <-> water's 1 mPa·s): medium crude is ~10 mPa·s
+const double mu_petroleum = 35.0; // viscosity
+const double buoyancy_petroleum = 0.0; //see buoyancy_water
+const double sigma_petroleum = 0.027; // surface tension constant, N/m (crude: ~0.025-0.030)
+const double threshold_petroleum = 5.748; //was 6.0 for poly6; see the note on kernel_vol_const
 
 /*****petroleum-water interface parameters******/
 //repulsive force between unlike phases, keeps them from interpenetrating/mixing;
@@ -70,23 +70,23 @@ const double sigma_interphase = 0.05; // try 0.02 N/m
 //H/s = 1.0 -- comfortably below the H/s ~ 1.5 where the spline starts to suffer
 //the pairing instability.
 //At this ratio the cubic-spline density sum on a rest-spaced lattice returns
-//0.99997*rhozero, i.e. the reference state sits essentially exactly at rho0 and
+//0.99997*rho0, i.e. the reference state sits essentially exactly at rho0 and
 //the EOS restores symmetrically in both directions. (poly6 returned 1.010 here
 //and 0.963 at the original 3.05761318, where the 3.7% deficit drove the rest
 //pressure negative and it was then clamped to zero, leaving the fluid with no
 //restoring stiffness at its own equilibrium.)
 //The surface-tension thresholds are tied to this choice: the colour-field
-//normal at a flat free surface is 0.958x its poly6 value, so thresholdwater and
-//thresholdpetroleum were rescaled by that factor to keep surface detection identical.
+//normal at a flat free surface is 0.958x its poly6 value, so threshold_water and
+//threshold_petroleum were rescaled by that factor to keep surface detection identical.
 const double kernel_vol_const = 5.1063;
 
 /******Number of particles *********/
-const int N1 = 5500; //number of particles
-const int N2 = 5500;
+const int n_water = 5500; //number of particles
+const int n_petroleum = 5500;
 
 /******Random initial conditions******/
 //One generator for every random draw in the set-up: the cube jitter, the
-//layered positions, and the random phase in setparams() when phases != 1.
+//layered positions, and the random phase in set_params() when phases != 1.
 //The seed is fixed, so a run is reproducible. The file start draws nothing.
 //rocks.h has its own generator (rock_seed), so the two never shift each other.
 const unsigned int init_seed = 0;
@@ -98,11 +98,11 @@ inline double uniform01() {
 
 /******Water drop released above the equilibrium pool*******/
 //Shape of the drop: sphere, cube, or none. Use none for the settling pass that
-//generates 000.data: the file reader expects exactly N1+N2 rows, so the run
+//generates 000.data: the file reader expects exactly n_water+n_petroleum rows, so the run
 //that writes it must not carry any drop particles.
 //Otherwise the particles sit on a
 //simple-cubic lattice at the water particle's own rest spacing
-//s = (Volwater/N1)^(1/3), so the drop starts at the pool's density rather than
+//s = (vol_water/n_water)^(1/3), so the drop starts at the pool's density rather than
 //artificially compressed or dilute, and the offsets are exactly symmetric under
 //reflection through the drop centre in all three axes (no random jitter).
 enum class DropShape {
@@ -113,23 +113,23 @@ enum class DropShape {
 const DropShape drop_shape = DropShape::none;
 //Drop radius in lattice cells. The kernel support is 2 cells (h/s = 2), so a
 //drop of radius 1 or 2 is essentially all surface: its density sum never
-//reaches rhozero, the EOS pressure clamps to 0, and it disperses in flight
+//reaches rho0, the EOS pressure clamps to 0, and it disperses in flight
 //instead of holding together as a drop.
-//Resulting Ndrop -- sphere: 7, 33, 123, 257 for R = 1, 2, 3, 4
+//Resulting n_drop -- sphere: 7, 33, 123, 257 for R = 1, 2, 3, 4
 //                   cube (2R+1)^3: 27, 125, 343, 729
 const int drop_radius_cells = 3;
-const double dropX = 0.0, dropY = 0.0, dropZ = 3.0;
+const double drop_x = 0.0, drop_y = 0.0, drop_z = 3.0;
 
 struct Offset {
   double x, y, z;
 };
 
-//Lattice offsets for the drop, in units of the water particle spacing. Ndrop is
+//Lattice offsets for the drop, in units of the water particle spacing. n_drop is
 //taken from this same function, so the particle count can never disagree with
 //the placement loop.
 vector<Offset> drop_offsets() {
   vector<Offset> off;
-  if(drop_shape == DropShape::none) return off; //no drop: Ndrop == 0
+  if(drop_shape == DropShape::none) return off; //no drop: n_drop == 0
   const int R = drop_radius_cells;
   const bool sphere = (drop_shape == DropShape::sphere);
   for(int ix = -R; ix <= R; ix++)
@@ -145,17 +145,17 @@ vector<Offset> drop_offsets() {
   return off;
 }
 
-const int Ndrop = (int)drop_offsets().size();
+const int n_drop = (int)drop_offsets().size();
 
-const int N = N1 + N2 + Ndrop;
-const double VolT = Volwater + Volpetroleum;
+const int N = n_water + n_petroleum + n_drop;
+const double vol_total = vol_water + vol_petroleum;
 //smoothing length of n particles filling volume vol (see the note on kernel_vol_const)
 inline double smoothing_length(double vol, int n) {
   return cbrt(315 * vol * kernel_vol_const / (64 * M_PI * n));
 }
-const double h_water_ref = smoothing_length(Volwater, N1); //water smoothing length, reused as a lengthscale outside the Particle class
-const double s_water = cbrt(Volwater / N1); //rest spacing of the water particles
-const double box_dim = cbrt(VolT / 4.0); //box half-width, sized so that (2*box_dim)*(2*box_dim)*box_dim == VolT
+const double h_water_ref = smoothing_length(vol_water, n_water); //water smoothing length, reused as a lengthscale outside the Particle class
+const double s_water = cbrt(vol_water / n_water); //rest spacing of the water particles
+const double box_dim = cbrt(vol_total / 4.0); //box half-width, sized so that (2*box_dim)*(2*box_dim)*box_dim == vol_total
 
 /******Boundary repulsion parameters******/
 //Smooth push-back as a particle nears a wall. Range is HALF a smoothing length,
@@ -165,7 +165,7 @@ const double box_dim = cbrt(VolT / 4.0); //box half-width, sized so that (2*box_
 //of the column: rho*g*depth spread over one particle's footprint s^2 needs
 //~140 m/s^2 for a 0.63 m pool, and D = 500 puts the bottom layer's standoff at
 //about half a spacing. Fast particles that beat it are caught by the
-//(dissipative) clamp in useboundaries().
+//(dissipative) clamp in use_boundaries().
 const double boundary_r0 = 0.5 * h_water_ref;
 const double boundary_D = 500.0; //wall_repulsion() itself is in geometry.h, with periodic_x
 
@@ -217,79 +217,79 @@ const double av_alpha = 0.05;
 const double av_beta = 0.0;
 const double av_eps = 0.01;
 
-class boundaries;
+class Boundaries;
 
 class Particle {
 private:
-  double h, mass, rhozero, density, mu, sigma, threshold, buoyancy, cvel, Gamma; //fluid properties
+  double h, mass, rho0, density, mu, sigma, threshold, buoyancy, cvel, gamma; //fluid properties
   unsigned int phase;
   double normal[3], pressure; //calculated properties
-  vector<int> neighbourlist;
+  vector<int> neighbour_list;
 
 public:
   double r[3];
   double v[3];
   double a[3];
-  void setparams(int phases);
-  void setphase(unsigned int ph);
-  void setdensity(double rho) { density = rho; };
+  void set_params(int phases);
+  void set_phase(unsigned int ph);
+  void set_density(double rho) { density = rho; };
   void ramp_cvel(double frac);
   void reinit();
   double kin_energy();
   friend void press_calc(Particle *body);
   friend void color_calc(Particle *body);
-  friend void forces(Particle *body, boundaries &limit);
-  friend void kinetic_E(Particle *body, int count);
+  friend void forces(Particle *body, Boundaries &limit);
+  friend void write_frame(Particle *body, int count);
 };
 
-void Particle::setparams(int phases) {
+void Particle::set_params(int phases) {
   if(phases == 1) {
     phase = 1;
-    h = smoothing_length(VolT, N);
-    rhozero = rhowater;
-    mass = rhozero * VolT / N;
-    mu = muwater;
-    sigma = sigmawater;
-    threshold = thresholdwater;
-    buoyancy = buoyancywater;
-    cvel = cvelwater;
-    Gamma = Gammawater;
+    h = smoothing_length(vol_total, N);
+    rho0 = rho_water;
+    mass = rho0 * vol_total / N;
+    mu = mu_water;
+    sigma = sigma_water;
+    threshold = threshold_water;
+    buoyancy = buoyancy_water;
+    cvel = cvel_water;
+    gamma = gamma_water;
   } else {
     if(uniform01() <= 0.5)
-      setphase(1);
+      set_phase(1);
     else
-      setphase(2);
+      set_phase(2);
   }
 }
 
-void Particle::setphase(unsigned int ph) {
+void Particle::set_phase(unsigned int ph) {
   if(ph == 1) {
     phase = 1;
-    h = smoothing_length(Volwater, N1);
-    rhozero = rhowater;
-    mass = rhozero * Volwater / N1;
-    mu = muwater;
-    sigma = sigmawater;
-    threshold = thresholdwater;
-    buoyancy = buoyancywater;
-    cvel = cvelwater;
-    Gamma = Gammawater;
+    h = smoothing_length(vol_water, n_water);
+    rho0 = rho_water;
+    mass = rho0 * vol_water / n_water;
+    mu = mu_water;
+    sigma = sigma_water;
+    threshold = threshold_water;
+    buoyancy = buoyancy_water;
+    cvel = cvel_water;
+    gamma = gamma_water;
   } else {
     phase = 2;
-    h = smoothing_length(Volpetroleum, N2);
-    rhozero = rhopetroleum;
-    mass = rhozero * Volpetroleum / N2;
-    mu = mupetroleum;
-    sigma = sigmapetroleum;
-    threshold = thresholdpetroleum;
-    buoyancy = buoyancypetroleum;
-    cvel = cvelpetroleum;
-    Gamma = Gammapetroleum;
+    h = smoothing_length(vol_petroleum, n_petroleum);
+    rho0 = rho_petroleum;
+    mass = rho0 * vol_petroleum / n_petroleum;
+    mu = mu_petroleum;
+    sigma = sigma_petroleum;
+    threshold = threshold_petroleum;
+    buoyancy = buoyancy_petroleum;
+    cvel = cvel_petroleum;
+    gamma = gamma_petroleum;
   }
 }
 
 void Particle::ramp_cvel(double frac) {
-  double target = (phase == 1) ? cvelwater : cvelpetroleum;
+  double target = (phase == 1) ? cvel_water : cvel_petroleum;
   cvel = cvel_ramp_start + (target - cvel_ramp_start) * frac;
 }
 
@@ -297,7 +297,7 @@ void Particle::reinit() {
   pressure = 0.0;
   fill(normal, normal + 3, 0.0);
   fill(a, a + 3, 0.0);
-  neighbourlist.resize(0);
+  neighbour_list.resize(0);
 }
 
 double Particle::kin_energy() {
@@ -308,30 +308,30 @@ double Particle::kin_energy() {
 
 //The box: walls at x,y = +-dim (none in x when periodic_x), floor at z = 0,
 //ceiling at zheight.
-class boundaries {
+class Boundaries {
 private:
-  double boundaryX[2], boundaryY[2], boundaryZ[2];
+  double boundary_x[2], boundary_y[2], boundary_z[2];
 
 public:
   void set_boundaries(double dim, double zheight);
-  friend void useboundaries(Particle &body, boundaries &limit);
-  friend void forces(Particle *body, boundaries &limit);
+  friend void use_boundaries(Particle &body, Boundaries &limit);
+  friend void forces(Particle *body, Boundaries &limit);
   friend int main();
 };
 
-void boundaries::set_boundaries(double dim, double zheight) {
-  boundaryX[0] = -dim;
-  boundaryX[1] = dim;
-  boundaryY[0] = -dim;
-  boundaryY[1] = dim;
-  boundaryZ[0] = 0.0;
-  boundaryZ[1] = zheight;
-  box_x0 = boundaryX[0];
-  box_Lx = boundaryX[1] - boundaryX[0];
+void Boundaries::set_boundaries(double dim, double zheight) {
+  boundary_x[0] = -dim;
+  boundary_x[1] = dim;
+  boundary_y[0] = -dim;
+  boundary_y[1] = dim;
+  boundary_z[0] = 0.0;
+  boundary_z[1] = zheight;
+  box_x0 = boundary_x[0];
+  box_Lx = boundary_x[1] - boundary_x[0];
 }
 
 //How the particles start (the argument of initialize() in main()):
-//  file    -> read the settled state in 000.data (N1+N2 rows), plus the drop
+//  file    -> read the settled state in 000.data (n_water+n_petroleum rows), plus the drop
 //  cube    -> all N particles on a jittered lattice filling the box's lower half
 //  layered -> petroleum at the bottom, water on top, at random positions
 enum class InitialState {
@@ -352,13 +352,13 @@ void initial_cond(InitialState state, Particle *body, int phases) {
     //and never recovers. The lattice starts every particle at exactly rest
     //density; the small jitter breaks the lattice symmetry so it does not
     //behave like a crystal. The top layer is partial, which is the free surface.
-    double spacing = cbrt(VolT / N);
+    double spacing = cbrt(vol_total / N);
     int nx = (int)(2.0 * dim / spacing);
     int ny = nx;
     double jit = 0.05 * spacing;
     for(int i = 0; i < N; i++) {
-      body[i].setdensity(0.0);
-      body[i].setparams(phases);
+      body[i].set_density(0.0);
+      body[i].set_params(phases);
       body[i].reinit();
       int ix = i % nx;
       int iy = (i / nx) % ny;
@@ -374,20 +374,20 @@ void initial_cond(InitialState state, Particle *body, int phases) {
     //petroleum starts at the bottom, water on top: the opposite of the buoyant
     //equilibrium, so the swap is visible as the simulation runs.
     //dim must match the box set by set_boundaries so the placement volume
-    //(and therefore the SPH density estimate) is consistent with Volwater/Volpetroleum
+    //(and therefore the SPH density estimate) is consistent with vol_water/vol_petroleum
     const double dim = box_dim;
     double zmid = dim / 2.0;
     for(int i = 0; i < N; i++) {
-      body[i].setdensity(0.0);
+      body[i].set_density(0.0);
       body[i].reinit();
       fill(body[i].v, body[i].v + 3, 0.0);
       body[i].r[0] = (2 * uniform01() - 1.0) * dim; //(-dim,dim)
       body[i].r[1] = (2 * uniform01() - 1.0) * dim; //(-dim,dim)
-      if(i < N1) {
-        body[i].setphase(1); //water: upper band
+      if(i < n_water) {
+        body[i].set_phase(1); //water: upper band
         body[i].r[2] = zmid + uniform01() * (dim - zmid);
       } else {
-        body[i].setphase(2); //petroleum: lower band
+        body[i].set_phase(2); //petroleum: lower band
         body[i].r[2] = uniform01() * zmid;
       }
     }
@@ -399,7 +399,7 @@ void initial_cond(InitialState state, Particle *body, int phases) {
     //themselves surrounded by spaces: against "x,y,z" the string extraction
     //runs to the next whitespace and swallows the entire rest of the line, so
     //each particle ends up holding one field from seven consecutive lines and
-    //phase_int parses "-0" as 0 -> setphase(0) -> every particle becomes petroleum.
+    //phase_int parses "-0" as 0 -> set_phase(0) -> every particle becomes petroleum.
     //Going through a stringstream makes the reader independent of the spacing.
     ifstream file;
     file.open("000.data");
@@ -407,10 +407,10 @@ void initial_cond(InitialState state, Particle *body, int phases) {
       cerr << "initial_cond: could not open 000.data" << endl;
       exit(1);
     }
-    int Nfile = N1 + N2; //particles stored in the equilibrium file
+    int n_file = n_water + n_petroleum; //particles stored in the equilibrium file
     string line;
     int nread = 0;
-    while(nread < Nfile && getline(file, line)) {
+    while(nread < n_file && getline(file, line)) {
       for(size_t c = 0; c < line.size(); c++)
         if(line[c] == ',') line[c] = ' ';
       istringstream ss(line);
@@ -422,7 +422,7 @@ void initial_cond(InitialState state, Particle *body, int phases) {
              << ", expected 1 or 2" << endl;
         exit(1);
       }
-      body[nread].setdensity(0.0);
+      body[nread].set_density(0.0);
       body[nread].reinit();
       body[nread].r[0] = x;
       body[nread].r[1] = y;
@@ -430,30 +430,30 @@ void initial_cond(InitialState state, Particle *body, int phases) {
       body[nread].v[0] = vx;
       body[nread].v[1] = vy;
       body[nread].v[2] = vz;
-      body[nread].setphase((unsigned int)phase_int);
+      body[nread].set_phase((unsigned int)phase_int);
       nread++;
     }
     file.close();
-    if(nread != Nfile) {
+    if(nread != n_file) {
       cerr << "initial_cond: 000.data supplied " << nread << " particles, expected "
-           << Nfile << " (columns must be x,y,z,vx,vy,vz,phase)" << endl;
+           << n_file << " (columns must be x,y,z,vx,vy,vz,phase)" << endl;
       exit(1);
     }
 
     //Water drop: a symmetric cluster released above the pool, built from the
-    //same offsets that determined Ndrop and scaled by the water particle's rest
+    //same offsets that determined n_drop and scaled by the water particle's rest
     //spacing so the drop begins at the pool's own density. Deliberately not
     //jittered -- the symmetry is the point, so the splash stays axisymmetric.
     vector<Offset> off = drop_offsets();
     for(size_t k = 0; k < off.size(); k++) {
-      int i = Nfile + (int)k;
-      body[i].setdensity(0.0);
+      int i = n_file + (int)k;
+      body[i].set_density(0.0);
       body[i].reinit();
       fill(body[i].v, body[i].v + 3, 0.0);
-      body[i].setphase(1); //water
-      body[i].r[0] = dropX + off[k].x * s_water;
-      body[i].r[1] = dropY + off[k].y * s_water;
-      body[i].r[2] = dropZ + off[k].z * s_water;
+      body[i].set_phase(1); //water
+      body[i].r[0] = drop_x + off[k].x * s_water;
+      body[i].r[1] = drop_y + off[k].y * s_water;
+      body[i].r[2] = drop_z + off[k].z * s_water;
     }
   }
 }
@@ -549,7 +549,7 @@ void press_calc(Particle *body) {
             dr2 = body[i].r[2] - body[j].r[2];
             normdr = sqrt(dr0 * dr0 + dr1 * dr1 + dr2 * dr2);
             if(normdr <= body[i].h) {
-              body[i].neighbourlist.push_back(j);
+              body[i].neighbour_list.push_back(j);
               if(body[i].phase == body[j].phase) {
                 rhoi += body[j].mass * kernel_cubic(body[i].h, normdr);
 #pragma omp atomic
@@ -571,17 +571,17 @@ void press_calc(Particle *body) {
   //neighbours (1.0 for a fully-sampled bulk particle, <1.0 near an
   //interface); dividing the raw density by it corrects the under-count
   //instead of just clamping the resulting negative pressure afterward.
-  vector<double> gamma(N);
+  vector<double> shepard(N);
 #pragma omp parallel for
   for(int i = 0; i < N; i++) {
-    gamma[i] = body[i].mass / body[i].density * kernel_cubic(body[i].h, 0.0);
+    shepard[i] = body[i].mass / body[i].density * kernel_cubic(body[i].h, 0.0);
   }
 #pragma omp parallel for
   for(int i = 0; i < N; i++) {
     double dr0, dr1, dr2, normdr;
     double gi = 0.0; //accumulate locally, flush once: see the note in forces()
-    for(size_t k = 0; k < body[i].neighbourlist.size(); k++) {
-      int neigh = body[i].neighbourlist[k];
+    for(size_t k = 0; k < body[i].neighbour_list.size(); k++) {
+      int neigh = body[i].neighbour_list[k];
       if(body[i].phase == body[neigh].phase) {
         dr0 = min_image_x(body[i].r[0] - body[neigh].r[0]);
         dr1 = body[i].r[1] - body[neigh].r[1];
@@ -589,20 +589,20 @@ void press_calc(Particle *body) {
         normdr = sqrt(dr0 * dr0 + dr1 * dr1 + dr2 * dr2);
         gi += body[neigh].mass / body[neigh].density * kernel_cubic(body[i].h, normdr);
 #pragma omp atomic
-        gamma[neigh] += body[i].mass / body[i].density * kernel_cubic(body[neigh].h, normdr);
+        shepard[neigh] += body[i].mass / body[i].density * kernel_cubic(body[neigh].h, normdr);
       }
     }
 #pragma omp atomic
-    gamma[i] += gi;
+    shepard[i] += gi;
   }
 #pragma omp parallel for
   for(int i = 0; i < N; i++) {
-    body[i].density = body[i].density / gamma[i];
+    body[i].density = body[i].density / shepard[i];
   }
 
 #pragma omp parallel for
   for(int i = 0; i < N; i++) {
-    body[i].pressure = body[i].rhozero * body[i].cvel * body[i].cvel * (pow((body[i].density / body[i].rhozero), body[i].Gamma) - 1.0) / body[i].Gamma; //Monagan equation 10.1
+    body[i].pressure = body[i].rho0 * body[i].cvel * body[i].cvel * (pow((body[i].density / body[i].rho0), body[i].gamma) - 1.0) / body[i].gamma; //Monagan equation 10.1
     if(body[i].pressure < 0.0) body[i].pressure = 0.0; //forbid tensile pressure: avoids the SPH tensile instability at under-sampled (interface) particles
   }
 }
@@ -614,8 +614,8 @@ void color_calc(Particle *body) {
     double dr0, dr1, dr2, normdr;
     //accumulate locally, flush once: see the note in forces()
     double ni0 = 0.0, ni1 = 0.0, ni2 = 0.0;
-    for(size_t j = 0; j < body[i].neighbourlist.size(); j++) {
-      int neigh = body[i].neighbourlist[j];
+    for(size_t j = 0; j < body[i].neighbour_list.size(); j++) {
+      int neigh = body[i].neighbour_list[j];
 
       if(body[i].phase == body[neigh].phase) {
         dr0 = min_image_x(body[i].r[0] - body[neigh].r[0]);
@@ -628,18 +628,18 @@ void color_calc(Particle *body) {
         dr1 = dr1 / normdr;
         dr2 = dr2 / normdr;
 
-        ni0 += body[neigh].mass * Dkernel_cubic(body[i].h, normdr) * dr0 / body[neigh].density;
-        ni1 += body[neigh].mass * Dkernel_cubic(body[i].h, normdr) * dr1 / body[neigh].density;
-        ni2 += body[neigh].mass * Dkernel_cubic(body[i].h, normdr) * dr2 / body[neigh].density;
+        ni0 += body[neigh].mass * dkernel_cubic(body[i].h, normdr) * dr0 / body[neigh].density;
+        ni1 += body[neigh].mass * dkernel_cubic(body[i].h, normdr) * dr1 / body[neigh].density;
+        ni2 += body[neigh].mass * dkernel_cubic(body[i].h, normdr) * dr2 / body[neigh].density;
 
         //newtons third law
 
 #pragma omp atomic
-        body[neigh].normal[0] -= body[i].mass * Dkernel_cubic(body[neigh].h, normdr) * dr0 / body[i].density;
+        body[neigh].normal[0] -= body[i].mass * dkernel_cubic(body[neigh].h, normdr) * dr0 / body[i].density;
 #pragma omp atomic
-        body[neigh].normal[1] -= body[i].mass * Dkernel_cubic(body[neigh].h, normdr) * dr1 / body[i].density;
+        body[neigh].normal[1] -= body[i].mass * dkernel_cubic(body[neigh].h, normdr) * dr1 / body[i].density;
 #pragma omp atomic
-        body[neigh].normal[2] -= body[i].mass * Dkernel_cubic(body[neigh].h, normdr) * dr2 / body[i].density;
+        body[neigh].normal[2] -= body[i].mass * dkernel_cubic(body[neigh].h, normdr) * dr2 / body[i].density;
       }
     }
 #pragma omp atomic
@@ -651,7 +651,7 @@ void color_calc(Particle *body) {
   }
 }
 
-void forces(Particle *body, boundaries &limit) {
+void forces(Particle *body, Boundaries &limit) {
   press_calc(body);
   color_calc(body);
 #pragma omp parallel for
@@ -661,14 +661,14 @@ void forces(Particle *body, boundaries &limit) {
     double normnormali, normnormalj;
     //accumulate particle i's own share locally and flush it once at the end of
     //the loop body. Writing body[i].a directly is a data race: another thread
-    //handling a lower-indexed particle reaches i through its neighbourlist and
+    //handling a lower-indexed particle reaches i through its neighbour_list and
     //updates the same address atomically, and mixing atomic with non-atomic
     //access loses updates -- which breaks Newton's third law at random and
     //injects momentum and energy.
     double ai0 = 0.0, ai1 = 0.0, ai2 = 0.0;
     double prhoi = body[i].pressure / (body[i].density * body[i].density);
-    for(size_t j = 0; j < body[i].neighbourlist.size(); j++) {
-      int neigh = body[i].neighbourlist[j];
+    for(size_t j = 0; j < body[i].neighbour_list.size(); j++) {
+      int neigh = body[i].neighbour_list[j];
 
       prhoj = body[neigh].pressure / (body[neigh].density * body[neigh].density);
 
@@ -703,8 +703,8 @@ void forces(Particle *body, boundaries &limit) {
 
       //pressure (+ artificial viscosity, which enters identically)
       double press_term = prhoi + prhoj + pi_ij;
-      double dwi = Dkernel_cubic(body[i].h, normdr);
-      double dwj = Dkernel_cubic(body[neigh].h, normdr);
+      double dwi = dkernel_cubic(body[i].h, normdr);
+      double dwj = dkernel_cubic(body[neigh].h, normdr);
 
       ai0 += -body[i].density * press_term * body[neigh].mass * dwi * dr0;
       ai1 += -body[i].density * press_term * body[neigh].mass * dwi * dr1;
@@ -749,7 +749,7 @@ void forces(Particle *body, boundaries &limit) {
         normnormalj = sqrt(body[neigh].normal[0] * body[neigh].normal[0] + body[neigh].normal[1] * body[neigh].normal[1] + body[neigh].normal[2] * body[neigh].normal[2]);
 
         if(normnormali > body[i].threshold) {
-          double ddk = DDkernel_cubic(body[i].h, normdr);
+          double ddk = ddkernel_cubic(body[i].h, normdr);
           double fx = -body[i].sigma * body[i].normal[0] * body[neigh].mass * ddk / (normnormali * body[neigh].density);
           double fy = -body[i].sigma * body[i].normal[1] * body[neigh].mass * ddk / (normnormali * body[neigh].density);
           double fz = -body[i].sigma * body[i].normal[2] * body[neigh].mass * ddk / (normnormali * body[neigh].density);
@@ -765,7 +765,7 @@ void forces(Particle *body, boundaries &limit) {
           ai2 += fz;
         }
         if(normnormalj > body[neigh].threshold) {
-          double ddk = DDkernel_cubic(body[neigh].h, normdr);
+          double ddk = ddkernel_cubic(body[neigh].h, normdr);
           double fx = body[neigh].sigma * body[neigh].normal[0] * body[i].mass * ddk / (normnormalj * body[i].density);
           double fy = body[neigh].sigma * body[neigh].normal[1] * body[i].mass * ddk / (normnormalj * body[i].density);
           double fz = body[neigh].sigma * body[neigh].normal[2] * body[i].mass * ddk / (normnormalj * body[i].density);
@@ -784,19 +784,19 @@ void forces(Particle *body, boundaries &limit) {
           body[neigh].a[2] += fz;
         }
       } else {
-        //Interfacial repulsion between unlike phases: -Dkernel_cubic is >=0 for
+        //Interfacial repulsion between unlike phases: -dkernel_cubic is >=0 for
         //normdr in [0,h] and vanishes smoothly at h, giving a short-range push
         //apart that keeps the two phases from interpenetrating/mixing
-        ai0 += sigma_interphase * body[neigh].mass * (-Dkernel_cubic(body[i].h, normdr)) * dr0 / body[neigh].density;
-        ai1 += sigma_interphase * body[neigh].mass * (-Dkernel_cubic(body[i].h, normdr)) * dr1 / body[neigh].density;
-        ai2 += sigma_interphase * body[neigh].mass * (-Dkernel_cubic(body[i].h, normdr)) * dr2 / body[neigh].density;
+        ai0 += sigma_interphase * body[neigh].mass * (-dkernel_cubic(body[i].h, normdr)) * dr0 / body[neigh].density;
+        ai1 += sigma_interphase * body[neigh].mass * (-dkernel_cubic(body[i].h, normdr)) * dr1 / body[neigh].density;
+        ai2 += sigma_interphase * body[neigh].mass * (-dkernel_cubic(body[i].h, normdr)) * dr2 / body[neigh].density;
 
 #pragma omp atomic
-        body[neigh].a[0] += -sigma_interphase * body[i].mass * (-Dkernel_cubic(body[neigh].h, normdr)) * dr0 / body[i].density;
+        body[neigh].a[0] += -sigma_interphase * body[i].mass * (-dkernel_cubic(body[neigh].h, normdr)) * dr0 / body[i].density;
 #pragma omp atomic
-        body[neigh].a[1] += -sigma_interphase * body[i].mass * (-Dkernel_cubic(body[neigh].h, normdr)) * dr1 / body[i].density;
+        body[neigh].a[1] += -sigma_interphase * body[i].mass * (-dkernel_cubic(body[neigh].h, normdr)) * dr1 / body[i].density;
 #pragma omp atomic
-        body[neigh].a[2] += -sigma_interphase * body[i].mass * (-Dkernel_cubic(body[neigh].h, normdr)) * dr2 / body[i].density;
+        body[neigh].a[2] += -sigma_interphase * body[i].mass * (-dkernel_cubic(body[neigh].h, normdr)) * dr2 / body[i].density;
       }
     }
 
@@ -813,16 +813,16 @@ void forces(Particle *body, boundaries &limit) {
     ai2 += -9.82 * body[i].density;
 
     //buoyancy (disabled: buoyancy==0, see the constant's definition)
-    ai2 += body[i].buoyancy * (body[i].density - body[i].rhozero) * (-9.82);
+    ai2 += body[i].buoyancy * (body[i].density - body[i].rho0) * (-9.82);
 
     //boundary repulsion: smooth push-back as a particle nears a wall, integrated
     //through the same leapfrog scheme as gravity/pressure (note the density
     //premultiply here matches gravity/buoyancy above, since everything in this
     //loop gets divided by density below)
     if(!periodic_x) //no x walls when x is periodic
-      ai0 += (wall_repulsion(body[i].r[0] - limit.boundaryX[0], boundary_r0, boundary_D) - wall_repulsion(limit.boundaryX[1] - body[i].r[0], boundary_r0, boundary_D)) * body[i].density;
-    ai1 += (wall_repulsion(body[i].r[1] - limit.boundaryY[0], boundary_r0, boundary_D) - wall_repulsion(limit.boundaryY[1] - body[i].r[1], boundary_r0, boundary_D)) * body[i].density;
-    ai2 += (wall_repulsion(body[i].r[2] - limit.boundaryZ[0], boundary_r0, boundary_D) - wall_repulsion(limit.boundaryZ[1] - body[i].r[2], boundary_r0, boundary_D)) * body[i].density;
+      ai0 += (wall_repulsion(body[i].r[0] - limit.boundary_x[0], boundary_r0, boundary_D) - wall_repulsion(limit.boundary_x[1] - body[i].r[0], boundary_r0, boundary_D)) * body[i].density;
+    ai1 += (wall_repulsion(body[i].r[1] - limit.boundary_y[0], boundary_r0, boundary_D) - wall_repulsion(limit.boundary_y[1] - body[i].r[1], boundary_r0, boundary_D)) * body[i].density;
+    ai2 += (wall_repulsion(body[i].r[2] - limit.boundary_z[0], boundary_r0, boundary_D) - wall_repulsion(limit.boundary_z[1] - body[i].r[2], boundary_r0, boundary_D)) * body[i].density;
     double frock[3];
     rock_force(body[i].r, boundary_r0, boundary_D, frock); //rocks repel like the walls, see rocks.h
     ai0 += frock[0] * body[i].density;
@@ -843,66 +843,7 @@ void forces(Particle *body, boundaries &limit) {
   }
 }
 
-void useboundaries(Particle &body, boundaries &limit) {
-  /*
-  //sphere
-  double vecS[3], vecI[3], vecN[3], normvecN, normvel;
-  if(body.r[0]*body.r[0] + body.r[1]*body.r[1] + body.r[2]*body.r[2] >= 1.0*1.0){
-    normvel = sqrt(body.v[0]*body.v[0] + body.v[1]*body.v[1] + body.v[2]*body.v[2]);
-    vecI[0]  = body.v[0]/normvel;
-    vecI[1]  = body.v[1]/normvel;
-    vecI[2]  = body.v[2]/normvel;
-
-    vecN[0] = body.r[0] - 0.0;
-    vecN[1] = body.r[1] - 0.0;
-    vecN[2] = body.r[2] - 0.0;
-    normvecN = sqrt(vecN[0]*vecN[0]+vecN[1]*vecN[1]+vecN[2]*vecN[2]);
-    vecN[0] /= normvecN;
-    vecN[1] /= normvecN;
-    vecN[2] /= normvecN;
-
-    vecS[0] = -1*(2*(vecN[0]*vecI[0] + vecN[1]*vecI[1] + vecN[2]*vecI[2])*vecN[0] - vecI[0]);
-    vecS[1] = -1*(2*(vecN[0]*vecI[0] + vecN[1]*vecI[1] + vecN[2]*vecI[2])*vecN[1] - vecI[1]);
-    vecS[2] = -1*(2*(vecN[0]*vecI[0] + vecN[1]*vecI[1] + vecN[2]*vecI[2])*vecN[2] - vecI[2]);
-
-    body.v[0] = 0.97*normvel*vecS[0];
-    body.v[1] = 0.97*normvel*vecS[1];
-    body.v[2] = 0.97*normvel*vecS[2];
-  }
-  */
-
-  //plane z=mx+b
-  //m=atan(angle)
-  /*
-  double angle = 0.0;
-  double vecS[3], vecI[3], vecN[3], normvecN, normvel, m=atan(angle*M_PI/180.0), b=0.0;
-  vecN[0] = sin(angle*M_PI/180.0);
-  vecN[1] = 0.0;
-  vecN[2] = cos(angle*M_PI/180.0);
-  if(body.r[2] <= -m*body.r[0]+b){
-    normvel = sqrt(body.v[0]*body.v[0] + body.v[1]*body.v[1] + body.v[2]*body.v[2]);
-    vecI[0]  = body.v[0]/normvel;
-    vecI[1]  = body.v[1]/normvel;
-    vecI[2]  = body.v[2]/normvel;
-    
-    vecS[0] = -1*(2*(vecN[0]*vecI[0] + vecN[1]*vecI[1] + vecN[2]*vecI[2])*vecN[0] - vecI[0]);
-    vecS[1] = -1*(2*(vecN[0]*vecI[0] + vecN[1]*vecI[1] + vecN[2]*vecI[2])*vecN[1] - vecI[1]);
-    vecS[2] = -1*(2*(vecN[0]*vecI[0] + vecN[1]*vecI[1] + vecN[2]*vecI[2])*vecN[2] - vecI[2]);
-
-    body.v[0] = 0.97*normvel*vecS[0];
-    body.v[1] = 0.97*normvel*vecS[1];
-    body.v[2] = 0.97*normvel*vecS[2];
-  }
-  if(body.r[0] <= limit.boundaryX[0])    
-    body.v[0] *= -0.97;//-1.0;
-  if(body.r[0] >= limit.boundaryX[1])
-    body.v[0] *= -0.97;//-1.0;
-  if(body.r[1] <= limit.boundaryY[0])
-    body.v[1] *= -0.97;//-1.0;
-  if(body.r[1] >= limit.boundaryY[1])
-    body.v[1] *= -0.97;//-1.0;
-  */
-
+void use_boundaries(Particle &body, Boundaries &limit) {
   //cube
   //Safety net for anything that still tunnels through a wall. This clamps the
   //particle onto the wall and removes the inward normal velocity, so it is
@@ -913,50 +854,50 @@ void useboundaries(Particle &body, boundaries &limit) {
   //real work; this should almost never fire.
   if(periodic_x) {
     body.r[0] = wrap_x(body.r[0]); //periodic: wrap instead of clamping
-  } else if(body.r[0] < limit.boundaryX[0]) {
-    body.r[0] = limit.boundaryX[0];
+  } else if(body.r[0] < limit.boundary_x[0]) {
+    body.r[0] = limit.boundary_x[0];
     if(body.v[0] < 0.0) body.v[0] = 0.0;
-  } else if(body.r[0] > limit.boundaryX[1]) {
-    body.r[0] = limit.boundaryX[1];
+  } else if(body.r[0] > limit.boundary_x[1]) {
+    body.r[0] = limit.boundary_x[1];
     if(body.v[0] > 0.0) body.v[0] = 0.0;
   }
-  if(body.r[1] < limit.boundaryY[0]) {
-    body.r[1] = limit.boundaryY[0];
+  if(body.r[1] < limit.boundary_y[0]) {
+    body.r[1] = limit.boundary_y[0];
     if(body.v[1] < 0.0) body.v[1] = 0.0;
   }
-  if(body.r[1] > limit.boundaryY[1]) {
-    body.r[1] = limit.boundaryY[1];
+  if(body.r[1] > limit.boundary_y[1]) {
+    body.r[1] = limit.boundary_y[1];
     if(body.v[1] > 0.0) body.v[1] = 0.0;
   }
-  if(body.r[2] < limit.boundaryZ[0]) {
-    body.r[2] = limit.boundaryZ[0];
+  if(body.r[2] < limit.boundary_z[0]) {
+    body.r[2] = limit.boundary_z[0];
     if(body.v[2] < 0.0) body.v[2] = 0.0;
   }
-  if(body.r[2] > limit.boundaryZ[1]) {
-    body.r[2] = limit.boundaryZ[1];
+  if(body.r[2] > limit.boundary_z[1]) {
+    body.r[2] = limit.boundary_z[1];
     if(body.v[2] > 0.0) body.v[2] = 0.0;
   }
   rock_clamp(body.r, body.v); //same safety net for the rocks, see rocks.h
 }
 
-void initialize(Particle *body, boundaries &limit, int phases, InitialState state) {
+void initialize(Particle *body, Boundaries &limit, int phases, InitialState state) {
   const double dim = box_dim;
   //Ceiling at 2*dim: the fluid occupies the lower half, so it has a real free
   //surface to relieve the inward push of the wall repulsion. At zheight==dim it
   //exactly fills the box and the boundary force can only compress it; at
-  //dropZ+0.5 it had 5.5x its own volume to spread into.
+  //drop_z+0.5 it had 5.5x its own volume to spread into.
   double zheight = 2.0 * dim;
-  if(state == InitialState::file && Ndrop > 0) {
+  if(state == InitialState::file && n_drop > 0) {
     //raise the ceiling clear of the drop: its own top, plus a few smoothing
     //lengths so the ceiling repulsion is not touching it at release
-    zheight = dropZ + drop_radius_cells * s_water + 4.0 * h_water_ref;
+    zheight = drop_z + drop_radius_cells * s_water + 4.0 * h_water_ref;
   }
   limit.set_boundaries(dim, zheight);
   setup_rocks(dim, frame_every); //after set_boundaries: needs box_Lx for the periodic distances
   initial_cond(state, body, phases);
 }
 
-void verlet(Particle *body, boundaries &limit, double dt, unsigned int cycle) {
+void verlet(Particle *body, Boundaries &limit, double dt, unsigned int cycle) {
   if(cycle == 1) {
 #pragma omp parallel for
     for(int i = 0; i < N; i++) {
@@ -973,20 +914,20 @@ void verlet(Particle *body, boundaries &limit, double dt, unsigned int cycle) {
       for(int j = 0; j < 3; j++) {
         body[i].v[j] += 0.5 * dt * body[i].a[j];
       }
-      useboundaries(body[i], limit);
+      use_boundaries(body[i], limit);
       //density is not reset here: press_calc overwrites it at the start of the
       //next step anyway, and zeroing it made the value unusable for diagnostics
     }
   }
 }
 
-void kinetic_E(Particle *body, int count) {
+void write_frame(Particle *body, int count) {
   string name;
   stringstream convert; // stringstream used for the conversion
   ofstream file;
   double kinetic = 0.0;
   double zsum1 = 0.0, zsum2 = 0.0;
-  double rhosum = 0.0; //mean density: should sit near rhozero once settled
+  double rhosum = 0.0; //mean density: should sit near rho0 once settled
   int n1 = 0, n2 = 0;
 
   convert << setfill('0') << setw(3) << count << ".dat"; //add the value of Number to the characters in the stream
@@ -995,7 +936,7 @@ void kinetic_E(Particle *body, int count) {
   file.open(name.c_str());
   for(int i = 0; i < N; i++) {
     kinetic += body[i].kin_energy();
-    rhosum += body[i].density / body[i].rhozero;
+    rhosum += body[i].density / body[i].rho0;
     if(body[i].phase == 1) {
       zsum1 += body[i].r[2];
       n1++;
@@ -1017,14 +958,14 @@ void kinetic_E(Particle *body, int count) {
 int main() {
   vector<Particle> particles(N);
   Particle *liquid = particles.data();
-  boundaries limit;
+  Boundaries limit;
   unsigned int phases = 1;
   int count = 0;
   //cube places all N particles uniformly in the box, whose volume is exactly
-  //VolT, so the run starts at rest density everywhere. file reads 000.data,
-  //a settled N1+N2 state (see InitialState).
+  //vol_total, so the run starts at rest density everywhere. file reads 000.data,
+  //a settled n_water+n_petroleum state (see InitialState).
   initialize(liquid, limit, phases, InitialState::file); //file, cube or layered
-  for(int ts = 0; ts < TS; ts++) {
+  for(int ts = 0; ts < n_steps; ts++) {
     double cvel_frac = (ts < cvel_ramp_steps) ? (double)ts / cvel_ramp_steps : 1.0;
 #pragma omp parallel for
     for(int i = 0; i < N; i++) liquid[i].ramp_cvel(cvel_frac);
@@ -1034,7 +975,7 @@ int main() {
     verlet(liquid, limit, dt, 2);
     if(ts % frame_every == 0) {
       count++;
-      kinetic_E(liquid, count);
+      write_frame(liquid, count);
     }
   }
 }

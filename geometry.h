@@ -11,7 +11,7 @@
 //image in x. Requires Lx >= 3*h so the neighbour grid has at least 3 distinct
 //cells across x (otherwise the 3x3x3 stencil would visit a cell twice).
 const bool periodic_x = true;
-double box_x0 = 0.0, box_Lx = 0.0; //set by boundaries::set_boundaries
+double box_x0 = 0.0, box_Lx = 0.0; //set by Boundaries::set_boundaries
 
 //map x back into [box_x0, box_x0+box_Lx)
 inline double wrap_x(double x) {
