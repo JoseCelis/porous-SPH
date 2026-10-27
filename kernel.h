@@ -41,7 +41,7 @@ inline double kernel_cubic(double h, double r) {
 }
 
 /* dW/dr. Negative over the whole support, zero at r=0 and at r=h. */
-inline double Dkernel_cubic(double h, double r) {
+inline double dkernel_cubic(double h, double r) {
   if(h <= 0.0 || r >= h) return 0.0;
   double q = 2.0 * r / h;
   double sig = 16.0 / (M_PI * h * h * h * h);
@@ -52,7 +52,7 @@ inline double Dkernel_cubic(double h, double r) {
 
 /* Full 3D radial Laplacian, d2W/dr2 + (2/r) dW/dr. Finite at r=0
    (-288/(pi h^5) there) because f'(q)/q tends to -3. */
-inline double DDkernel_cubic(double h, double r) {
+inline double ddkernel_cubic(double h, double r) {
   if(h <= 0.0 || r >= h) return 0.0;
   double q = 2.0 * r / h;
   if(q < 1e-8) q = 1e-8; //guard the f'(q)/q division; the limit itself is finite

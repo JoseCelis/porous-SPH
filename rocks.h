@@ -5,7 +5,7 @@
 //  setup_rocks(dim, steps_per_frame) in initialize():    builds the rocks, writes rocks.txt
 //  rock_grow(ts)                     in main():          the growth ramp at the start of a run
 //  rock_force(r, r0, D, f)           in forces():        wall-style repulsion from every rock
-//  rock_clamp(r, v)                  in useboundaries(): dissipative safety net, like the walls
+//  rock_clamp(r, v)                  in use_boundaries(): dissipative safety net, like the walls
 //
 //The box (periodic_x, min_image_x, wrap_x, wall_repulsion) comes from
 //geometry.h. The fluid-dependent wall parameters (boundary_r0, boundary_D) and
@@ -31,7 +31,7 @@
 /******Static polyhedral obstacles (rocks)******/
 //Convex polyhedra fixed in the fluid, treated exactly like the box walls:
 //wall_repulsion() pushes particles off their faces in forces(), and
-//useboundaries() clamps anything that still gets inside (dissipative).
+//use_boundaries() clamps anything that still gets inside (dissipative).
 //
 //Every rock is a copy of the template shape in rock_shape_file
 //(rock_shape.csv), moved to its own centre, scaled by its own size factor and
