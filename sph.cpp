@@ -20,6 +20,9 @@ using namespace std;
 const int n_steps = 50000; //number of time steps
 const double dt = 0.00005; //0.0003
 const int frame_every = 1000; //write a frame (NNN.dat) every this many steps
+//reorder the particles in memory by grid cell every this many steps (see
+//sort_by_cell); they move far less than a cell in that time
+const int sort_every = 50;
 
 /*****cvel warm-up ramp*******/
 //a freshly-placed (random) particle field has large local density variance;
@@ -230,6 +233,7 @@ public:
   double r[3];
   double v[3];
   double a[3];
+  int id; //index at the start of the run; frames are written in this order
   void set_params(int phases);
   void set_phase(unsigned int ph);
   void set_density(double rho) { density = rho; };
@@ -240,6 +244,7 @@ public:
   friend void color_calc(Particle *body);
   friend void forces(Particle *body, Boundaries &limit);
   friend void write_frame(Particle *body, int count);
+  friend void sort_by_cell(vector<Particle> &particles);
 };
 
 void Particle::set_params(int phases) {
@@ -771,10 +776,13 @@ void forces(Particle *body, Boundaries &limit) {
           ai2 += fz;
         }
         if(normnormalj > body[neigh].threshold) {
+          //same CSF formula as the i side above with i and j swapped (this used to
+          //have the opposite sign, so a particle's surface tension depended on
+          //whether each neighbour had a lower or a higher index)
           double ddk = ddkernel_cubic(body[neigh].h, normdr);
-          double fx = body[neigh].sigma * body[neigh].normal[0] * body[i].mass * ddk / (normnormalj * body[i].density);
-          double fy = body[neigh].sigma * body[neigh].normal[1] * body[i].mass * ddk / (normnormalj * body[i].density);
-          double fz = body[neigh].sigma * body[neigh].normal[2] * body[i].mass * ddk / (normnormalj * body[i].density);
+          double fx = -body[neigh].sigma * body[neigh].normal[0] * body[i].mass * ddk / (normnormalj * body[i].density);
+          double fy = -body[neigh].sigma * body[neigh].normal[1] * body[i].mass * ddk / (normnormalj * body[i].density);
+          double fz = -body[neigh].sigma * body[neigh].normal[2] * body[i].mass * ddk / (normnormalj * body[i].density);
           double fmag = sqrt(fx * fx + fy * fy + fz * fz);
           double fmax = surface_tension_amax * body[neigh].density; //j's share is divided by j's density
           if(fmag > fmax) {
@@ -929,6 +937,40 @@ void verlet(Particle *body, Boundaries &limit, double dt, unsigned int cycle) {
   }
 }
 
+//Reorders the particles by grid cell (x fastest, then y, then z, as the cells
+//are numbered in press_calc()), so particles that are neighbours in space are
+//also close in memory and the pair loops hit the cache instead of RAM. Only the
+//storage order changes: write_frame() writes in id order, so the frames are
+//unaffected apart from rounding, since the sums now run in another order.
+void sort_by_cell(vector<Particle> &particles) {
+  double lo[3] = {particles[0].r[0], particles[0].r[1], particles[0].r[2]};
+  double hi[3] = {lo[0], lo[1], lo[2]};
+  double hmax = 0.0;
+  for(int k = 0; k < N; k++) {
+    for(int j = 0; j < 3; j++) {
+      lo[j] = min(lo[j], particles[k].r[j]);
+      hi[j] = max(hi[j], particles[k].r[j]);
+    }
+    hmax = max(hmax, particles[k].h);
+  }
+  int nx = (int)((hi[0] - lo[0]) / hmax) + 1;
+  int ny = (int)((hi[1] - lo[1]) / hmax) + 1;
+  vector<long> key(N);
+  for(int k = 0; k < N; k++) {
+    long cx = (long)((particles[k].r[0] - lo[0]) / hmax);
+    long cy = (long)((particles[k].r[1] - lo[1]) / hmax);
+    long cz = (long)((particles[k].r[2] - lo[2]) / hmax);
+    key[k] = cx + nx * (cy + (long)ny * cz);
+  }
+  vector<int> order(N);
+  for(int k = 0; k < N; k++) order[k] = k;
+  stable_sort(order.begin(), order.end(), [&](int a, int b) { return key[a] < key[b]; });
+  vector<Particle> sorted;
+  sorted.reserve(N);
+  for(int k = 0; k < N; k++) sorted.push_back(std::move(particles[order[k]]));
+  particles.swap(sorted);
+}
+
 void write_frame(Particle *body, int count) {
   string name;
   stringstream convert; // stringstream used for the conversion
@@ -941,8 +983,13 @@ void write_frame(Particle *body, int count) {
   convert << setfill('0') << setw(3) << count << ".dat"; //add the value of Number to the characters in the stream
   name = convert.str();
 
+  //body[] is in cell order (sort_by_cell); visit it in id order so every frame
+  //lists the particles in the same order
+  vector<int> at(N);
+  for(int k = 0; k < N; k++) at[body[k].id] = k;
   file.open(name.c_str());
-  for(int i = 0; i < N; i++) {
+  for(int n = 0; n < N; n++) {
+    int i = at[n];
     kinetic += body[i].kin_energy();
     rhosum += body[i].density / body[i].rho0;
     if(body[i].phase == 1) {
@@ -970,7 +1017,12 @@ int main() {
   //vol_total, so the run starts at rest density everywhere. file reads 000.data,
   //a settled n_water+n_petroleum state (see InitialState).
   initialize(liquid, limit, phases, InitialState::layered); //file, cube or layered
+  for(int i = 0; i < N; i++) particles[i].id = i;
   for(int ts = 0; ts < n_steps; ts++) {
+    if(ts % sort_every == 0) {
+      sort_by_cell(particles);
+      liquid = particles.data(); //the storage moved
+    }
     if(ts <= cvel_ramp_steps) { //constant after the ramp, so skip the loop
       double cvel_frac = (ts < cvel_ramp_steps) ? (double)ts / cvel_ramp_steps : 1.0;
 #pragma omp parallel for
