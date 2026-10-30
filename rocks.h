@@ -2,7 +2,7 @@
 //
 //Everything about the rocks lives here: their shape, how many there are and
 //where (rock_mode, rocks.csv or n_rocks), the geometry, and the hooks sph.cpp calls:
-//  setup_rocks(dim, steps_per_frame) in initialize():    builds the rocks, writes rocks.txt
+//  setup_rocks(dim, steps_per_frame, r0) in initialize(): builds the rocks, writes rocks.txt
 //  rock_grow(ts)                     in main():          the growth ramp at the start of a run
 //  rock_force(r, r0, D, f)           in forces():        wall-style repulsion from every rock
 //  rock_clamp(r, v)                  in use_boundaries(): dissipative safety net, like the walls
@@ -98,6 +98,7 @@ struct Rock {
   std::vector<std::array<double, 3>> n;
   std::vector<double> d;
   double radius; //bounding radius about c, used to keep rocks apart
+  double reach; //bounding radius of the rock grown by the repulsion range r0: no force beyond it
 };
 std::vector<Rock> rocks; //filled by setup_rocks()
 
@@ -122,6 +123,15 @@ inline double rock_distance(const Rock &R, const double r[3], double n_out[3]) {
     }
   }
   return best;
+}
+
+//Whether r is within distance rad of rock R's centre (minimum image in x). A
+//cheap test that lets rock_force and rock_clamp skip the faces of far rocks;
+//the small margin covers rounding in corner_radius.
+inline bool rock_within(const Rock &R, const double r[3], double rad) {
+  double p[3] = {min_image_x(r[0] - R.c[0]), r[1] - R.c[1], r[2] - R.c[2]};
+  double lim = rad * (1.0 + 1e-9) + 1e-12;
+  return p[0] * p[0] + p[1] * p[1] + p[2] * p[2] <= lim * lim;
 }
 
 //Reads the template shape from rock_shape_file into rock_faces: CSV rows
@@ -206,6 +216,33 @@ void load_rock_shape() {
   }
 }
 
+//Bounding radius about c of the rock with every face pushed out by offset:
+//the farthest corner, where three face planes meet inside all the others.
+//The shrunk rock of the growth ramp (d scaled by rock_scale <= 1) lies inside
+//the full-size one, because every d > 0, so this bounds it as well.
+inline double corner_radius(const Rock &R, double offset) {
+  const int nf = R.d.size();
+  double rmax = 0.0;
+  for(int a = 0; a < nf; a++)
+    for(int b = a + 1; b < nf; b++)
+      for(int e = b + 1; e < nf; e++) {
+        const double *A = R.n[a].data(), *B = R.n[b].data(), *E = R.n[e].data();
+        //solve [A;B;E] x = [d_a;d_b;d_e] with Cramer's rule
+        double det = A[0] * (B[1] * E[2] - B[2] * E[1]) - A[1] * (B[0] * E[2] - B[2] * E[0]) + A[2] * (B[0] * E[1] - B[1] * E[0]);
+        if(fabs(det) < 1e-9) continue;
+        double da = R.d[a] + offset, db = R.d[b] + offset, de = R.d[e] + offset;
+        double x[3];
+        x[0] = (da * (B[1] * E[2] - B[2] * E[1]) - A[1] * (db * E[2] - B[2] * de) + A[2] * (db * E[1] - B[1] * de)) / det;
+        x[1] = (A[0] * (db * E[2] - B[2] * de) - da * (B[0] * E[2] - B[2] * E[0]) + A[2] * (B[0] * de - db * E[0])) / det;
+        x[2] = (A[0] * (B[1] * de - db * E[1]) - A[1] * (B[0] * de - db * E[0]) + da * (B[0] * E[1] - B[1] * E[0])) / det;
+        bool inside = true;
+        for(int k = 0; k < nf && inside; k++)
+          if(R.n[k][0] * x[0] + R.n[k][1] * x[1] + R.n[k][2] * x[2] > R.d[k] + offset + 1e-9) inside = false;
+        if(inside) rmax = std::max(rmax, sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]));
+      }
+  return rmax;
+}
+
 //Builds rock i from the template: rotation matrix Q (row-major), centre, size.
 Rock make_rock(const double c[3], double size, const double Q[3][3]) {
   Rock R;
@@ -220,27 +257,8 @@ Rock make_rock(const double c[3], double size, const double Q[3][3]) {
       R.n[k][j] = (Q[j][0] * f[0] + Q[j][1] * f[1] + Q[j][2] * f[2]) / nn;
     R.d[k] = size * f[3];
   }
-  //bounding radius = farthest template corner. Corners are where three face
-  //planes meet and that lie inside all the other planes.
-  double rmax = 0.0;
-  for(int a = 0; a < nf; a++)
-    for(int b = a + 1; b < nf; b++)
-      for(int e = b + 1; e < nf; e++) {
-        const double *A = R.n[a].data(), *B = R.n[b].data(), *E = R.n[e].data();
-        //solve [A;B;E] x = [d_a;d_b;d_e] with Cramer's rule
-        double det = A[0] * (B[1] * E[2] - B[2] * E[1]) - A[1] * (B[0] * E[2] - B[2] * E[0]) + A[2] * (B[0] * E[1] - B[1] * E[0]);
-        if(fabs(det) < 1e-9) continue;
-        double da = R.d[a], db = R.d[b], de = R.d[e];
-        double x[3];
-        x[0] = (da * (B[1] * E[2] - B[2] * E[1]) - A[1] * (db * E[2] - B[2] * de) + A[2] * (db * E[1] - B[1] * de)) / det;
-        x[1] = (A[0] * (db * E[2] - B[2] * de) - da * (B[0] * E[2] - B[2] * E[0]) + A[2] * (B[0] * de - db * E[0])) / det;
-        x[2] = (A[0] * (B[1] * de - db * E[1]) - A[1] * (B[0] * de - db * E[0]) + da * (B[0] * E[1] - B[1] * E[0])) / det;
-        bool inside = true;
-        for(int k = 0; k < nf && inside; k++)
-          if(R.n[k][0] * x[0] + R.n[k][1] * x[1] + R.n[k][2] * x[2] > R.d[k] + 1e-9) inside = false;
-        if(inside) rmax = std::max(rmax, sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]));
-      }
-  R.radius = rmax;
+  R.radius = corner_radius(R, 0.0);
+  R.reach = R.radius; //set properly by setup_rocks, which knows r0
   return R;
 }
 
@@ -276,7 +294,7 @@ void random_rotation(std::mt19937 &gen, double Q[3][3]) {
 
 //Fills `rocks` and writes rocks.txt. dim = box half-width in x and y;
 //steps_per_frame is only recorded in rocks.txt, for render_pyvista.py.
-void setup_rocks(double dim, int steps_per_frame) {
+void setup_rocks(double dim, int steps_per_frame, double r0) {
   rocks.clear();
   if(rock_mode != RockMode::none) load_rock_shape();
   if(rock_mode == RockMode::file) {
@@ -348,6 +366,7 @@ void setup_rocks(double dim, int steps_per_frame) {
       if(clear) rocks.push_back(R);
     }
   } //RockMode::none: nothing to build
+  for(size_t i = 0; i < rocks.size(); i++) rocks[i].reach = corner_radius(rocks[i], r0);
 
   //rocks.txt: what render_pyvista.py draws. Not *.dat, so the frame globs
   //(and `make fresh`) leave it alone.
@@ -372,6 +391,7 @@ void setup_rocks(double dim, int steps_per_frame) {
 inline void rock_force(const double r[3], double r0, double D, double f[3]) {
   f[0] = f[1] = f[2] = 0.0;
   for(size_t ir = 0; ir < rocks.size(); ir++) {
+    if(!rock_within(rocks[ir], r, rocks[ir].reach)) continue; //farther than r0 from every face: no force
     double nr[3];
     double frock = wall_repulsion(rock_distance(rocks[ir], r, nr), r0, D);
     f[0] += frock * nr[0];
@@ -384,6 +404,7 @@ inline void rock_force(const double r[3], double r0, double D, double f[3]) {
 //the nearest face and remove the velocity component pointing into the rock.
 inline void rock_clamp(double r[3], double v[3]) {
   for(size_t ir = 0; ir < rocks.size(); ir++) {
+    if(!rock_within(rocks[ir], r, rocks[ir].radius)) continue; //outside the bounding sphere: not inside the rock
     double nr[3];
     double d = rock_distance(rocks[ir], r, nr);
     if(d < 0.0) {

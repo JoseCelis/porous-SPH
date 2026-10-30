@@ -201,7 +201,7 @@ const double friction = 0.0;
 //The difference from the global `friction` above is what makes it useful here:
 //Pi_ij is nonzero ONLY for pairs that are APPROACHING each other. It therefore
 //dissipates relative motion -- acoustic ringing, particle disorder, the noise
-//that the non-conservative Mueller force model keeps feeding in -- while a
+//of a freshly placed field -- while a
 //uniformly translating blob (a falling drop, a sloshing pool) has no
 //approaching pairs and is left essentially untouched. `friction` cannot make
 //that distinction: it damps the drop and the noise at the same rate.
@@ -566,7 +566,7 @@ void press_calc(Particle *body) {
   //Shepard renormalization: the same-phase-only density sum above
   //under-counts near the interface, since part of a particle's support
   //radius is legitimately occupied by the other phase but contributes
-  //nothing to its same-phase density. gamma_i approximates the fraction of
+  //nothing to its same-phase density. shepard[i] approximates the fraction of
   //the kernel's normalized volume integral actually sampled by same-phase
   //neighbours (1.0 for a fully-sampled bulk particle, <1.0 near an
   //interface); dividing the raw density by it corrects the under-count
@@ -628,18 +628,20 @@ void color_calc(Particle *body) {
         dr1 = dr1 / normdr;
         dr2 = dr2 / normdr;
 
-        ni0 += body[neigh].mass * dkernel_cubic(body[i].h, normdr) * dr0 / body[neigh].density;
-        ni1 += body[neigh].mass * dkernel_cubic(body[i].h, normdr) * dr1 / body[neigh].density;
-        ni2 += body[neigh].mass * dkernel_cubic(body[i].h, normdr) * dr2 / body[neigh].density;
+        double dwi = dkernel_cubic(body[i].h, normdr);
+        double dwj = dkernel_cubic(body[neigh].h, normdr);
+        ni0 += body[neigh].mass * dwi * dr0 / body[neigh].density;
+        ni1 += body[neigh].mass * dwi * dr1 / body[neigh].density;
+        ni2 += body[neigh].mass * dwi * dr2 / body[neigh].density;
 
         //newtons third law
 
 #pragma omp atomic
-        body[neigh].normal[0] -= body[i].mass * dkernel_cubic(body[neigh].h, normdr) * dr0 / body[i].density;
+        body[neigh].normal[0] -= body[i].mass * dwj * dr0 / body[i].density;
 #pragma omp atomic
-        body[neigh].normal[1] -= body[i].mass * dkernel_cubic(body[neigh].h, normdr) * dr1 / body[i].density;
+        body[neigh].normal[1] -= body[i].mass * dwj * dr1 / body[i].density;
 #pragma omp atomic
-        body[neigh].normal[2] -= body[i].mass * dkernel_cubic(body[neigh].h, normdr) * dr2 / body[i].density;
+        body[neigh].normal[2] -= body[i].mass * dwj * dr2 / body[i].density;
       }
     }
 #pragma omp atomic
@@ -658,7 +660,7 @@ void forces(Particle *body, Boundaries &limit) {
   for(int i = 0; i < N; i++) {
     double dr0, dr1, dr2, normdr, prhoj;
     double dv0, dv1, dv2;
-    double normnormali, normnormalj;
+    double normnormalj;
     //accumulate particle i's own share locally and flush it once at the end of
     //the loop body. Writing body[i].a directly is a data race: another thread
     //handling a lower-indexed particle reaches i through its neighbour_list and
@@ -667,6 +669,7 @@ void forces(Particle *body, Boundaries &limit) {
     //injects momentum and energy.
     double ai0 = 0.0, ai1 = 0.0, ai2 = 0.0;
     double prhoi = body[i].pressure / (body[i].density * body[i].density);
+    double normnormali = sqrt(body[i].normal[0] * body[i].normal[0] + body[i].normal[1] * body[i].normal[1] + body[i].normal[2] * body[i].normal[2]);
     for(size_t j = 0; j < body[i].neighbour_list.size(); j++) {
       int neigh = body[i].neighbour_list[j];
 
@@ -728,13 +731,14 @@ void forces(Particle *body, Boundaries &limit) {
       //Brookshaw Laplacian carries a compensating factor of 2, and for uniform
       //mu both forms reduce to (mu/rho) grad^2 v. The effective viscosity of
       //the run is unchanged.
-      double visc = (body[i].mu + body[neigh].mu) * normdr / (normdr * normdr + av_eps * hbar_ij * hbar_ij) / body[neigh].density;
+      double visc_ij = (body[i].mu + body[neigh].mu) * normdr / (normdr * normdr + av_eps * hbar_ij * hbar_ij);
+      double visc = visc_ij / body[neigh].density;
       //dwi <= 0, so -visc*dwi >= 0 and the term drives v_i toward v_j: dissipative.
       ai0 += -visc * dwi * dv0;
       ai1 += -visc * dwi * dv1;
       ai2 += -visc * dwi * dv2;
 
-      double viscj = (body[i].mu + body[neigh].mu) * normdr / (normdr * normdr + av_eps * hbar_ij * hbar_ij) / body[i].density;
+      double viscj = visc_ij / body[i].density;
 #pragma omp atomic
       body[neigh].a[0] += viscj * dwj * dv0;
 #pragma omp atomic
@@ -745,7 +749,6 @@ void forces(Particle *body, Boundaries &limit) {
       //Surface tension
 
       if(body[i].phase == body[neigh].phase) {
-        normnormali = sqrt(body[i].normal[0] * body[i].normal[0] + body[i].normal[1] * body[i].normal[1] + body[i].normal[2] * body[i].normal[2]);
         normnormalj = sqrt(body[neigh].normal[0] * body[neigh].normal[0] + body[neigh].normal[1] * body[neigh].normal[1] + body[neigh].normal[2] * body[neigh].normal[2]);
 
         if(normnormali > body[i].threshold) {
@@ -791,16 +794,16 @@ void forces(Particle *body, Boundaries &limit) {
         //Interfacial repulsion between unlike phases: -dkernel_cubic is >=0 for
         //normdr in [0,h] and vanishes smoothly at h, giving a short-range push
         //apart that keeps the two phases from interpenetrating/mixing
-        ai0 += sigma_interphase * body[neigh].mass * (-dkernel_cubic(body[i].h, normdr)) * dr0 / body[neigh].density;
-        ai1 += sigma_interphase * body[neigh].mass * (-dkernel_cubic(body[i].h, normdr)) * dr1 / body[neigh].density;
-        ai2 += sigma_interphase * body[neigh].mass * (-dkernel_cubic(body[i].h, normdr)) * dr2 / body[neigh].density;
+        ai0 += sigma_interphase * body[neigh].mass * (-dwi) * dr0 / body[neigh].density;
+        ai1 += sigma_interphase * body[neigh].mass * (-dwi) * dr1 / body[neigh].density;
+        ai2 += sigma_interphase * body[neigh].mass * (-dwi) * dr2 / body[neigh].density;
 
 #pragma omp atomic
-        body[neigh].a[0] += -sigma_interphase * body[i].mass * (-dkernel_cubic(body[neigh].h, normdr)) * dr0 / body[i].density;
+        body[neigh].a[0] += -sigma_interphase * body[i].mass * (-dwj) * dr0 / body[i].density;
 #pragma omp atomic
-        body[neigh].a[1] += -sigma_interphase * body[i].mass * (-dkernel_cubic(body[neigh].h, normdr)) * dr1 / body[i].density;
+        body[neigh].a[1] += -sigma_interphase * body[i].mass * (-dwj) * dr1 / body[i].density;
 #pragma omp atomic
-        body[neigh].a[2] += -sigma_interphase * body[i].mass * (-dkernel_cubic(body[neigh].h, normdr)) * dr2 / body[i].density;
+        body[neigh].a[2] += -sigma_interphase * body[i].mass * (-dwj) * dr2 / body[i].density;
       }
     }
 
@@ -840,6 +843,7 @@ void forces(Particle *body, Boundaries &limit) {
 #pragma omp atomic
     body[i].a[2] += ai2;
   }
+#pragma omp parallel for
   for(int i = 0; i < N; i++) {
     for(int j = 0; j < 3; j++) {
       body[i].a[j] /= body[i].density;
@@ -897,7 +901,7 @@ void initialize(Particle *body, Boundaries &limit, int phases, InitialState stat
     zheight = drop_z + drop_radius_cells * s_water + 4.0 * h_water_ref;
   }
   limit.set_boundaries(dim, zheight);
-  setup_rocks(dim, frame_every); //after set_boundaries: needs box_Lx for the periodic distances
+  setup_rocks(dim, frame_every, boundary_r0); //after set_boundaries: needs box_Lx for the periodic distances
   initial_cond(state, body, phases);
 }
 
@@ -948,12 +952,9 @@ void write_frame(Particle *body, int count) {
       zsum2 += body[i].r[2];
       n2++;
     }
-    if(i < N - 1)
-      file << body[i].r[0] << ", " << body[i].r[1] << ", " << body[i].r[2] << ", " << body[i].v[0] << ", " << body[i].v[1] << ", " << body[i].v[2] << ", " << body[i].phase << endl;
-    else
-      file << body[i].r[0] << ", " << body[i].r[1] << ", " << body[i].r[2] << ", " << body[i].v[0] << ", " << body[i].v[1] << ", " << body[i].v[2] << ", " << body[i].phase << endl;
+    file << body[i].r[0] << ", " << body[i].r[1] << ", " << body[i].r[2] << ", " << body[i].v[0] << ", " << body[i].v[1] << ", " << body[i].v[2] << ", " << body[i].phase << '\n'; //not endl: that flushes every line
   }
-  file << endl;
+  file << '\n';
   file.close();
   cout << count << "   KE=" << kinetic << "   rho/rho0=" << rhosum / N
        << "   water_z=" << (n1 ? zsum1 / n1 : 0.0) << "   petroleum_z=" << (n2 ? zsum2 / n2 : 0.0) << endl;
@@ -970,9 +971,11 @@ int main() {
   //a settled n_water+n_petroleum state (see InitialState).
   initialize(liquid, limit, phases, InitialState::layered); //file, cube or layered
   for(int ts = 0; ts < n_steps; ts++) {
-    double cvel_frac = (ts < cvel_ramp_steps) ? (double)ts / cvel_ramp_steps : 1.0;
+    if(ts <= cvel_ramp_steps) { //constant after the ramp, so skip the loop
+      double cvel_frac = (ts < cvel_ramp_steps) ? (double)ts / cvel_ramp_steps : 1.0;
 #pragma omp parallel for
-    for(int i = 0; i < N; i++) liquid[i].ramp_cvel(cvel_frac);
+      for(int i = 0; i < N; i++) liquid[i].ramp_cvel(cvel_frac);
+    }
     rock_grow(ts); //rocks grow in over the first steps, see rocks.h
     verlet(liquid, limit, dt, 1);
     forces(liquid, limit);
