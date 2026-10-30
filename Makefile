@@ -5,14 +5,14 @@ LDFLAGS  = -lm
 TARGET = sph
 SRC    = sph.cpp
 
-.PHONY: all run fresh animate format clean
+.PHONY: all run fresh animate rocks format clean
 # prerequisites of `all` must run in order: simulate, then plot
 .NOTPARALLEL:
 
 # `clean` is deliberately NOT part of `all`: it deletes every .dat file, and
 # losing a finished run to an automatic cleanup is not worth the tidiness.
 # Run `make clean` yourself when you actually want the data gone.
-all: run animate
+all: run animate rocks
 
 $(TARGET): $(SRC) geometry.h kernel.h rocks.h
 	$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET) $(LDFLAGS)
@@ -38,6 +38,16 @@ PYTHON = .venv/bin/python
 
 animate:
 	$(PYTHON) render_pyvista.py $(DIR) --out $(OUT) $(ARGS)
+
+# One still picture of the rocks only (no fluid), with the box outline. The rocks
+# come from DIR/rocks.txt, written by every run, so run the solver once after
+# editing rocks.csv. Sizes follow DIR's last frame (full size after the ramp).
+#   make rocks DIR=part_1 ROCKS_OUT=part1_rocks.png
+#   make rocks ARGS="--azimuth 0 --elevation 0 --window-size 1280 960"
+ROCKS_OUT = rocks.png
+
+rocks:
+	$(PYTHON) render_pyvista.py $(DIR) --no-fluid --out $(ROCKS_OUT) $(ARGS)
 
 # Apply the layout in .clang-format to the C++ sources, in place.
 format:

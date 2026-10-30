@@ -17,7 +17,7 @@ using namespace std;
 
 /*******time parameteres******/
 //dt set by CFL: dt <= 0.4*h/cvel, h_water~0.0736, cvel=80 -> dt<=0.00037
-const int n_steps = 100000; //number of time steps
+const int n_steps = 50000; //number of time steps
 const double dt = 0.00005; //0.0003
 const int frame_every = 1000; //write a frame (NNN.dat) every this many steps
 
@@ -81,8 +81,8 @@ const double sigma_interphase = 0.05; // try 0.02 N/m
 const double kernel_vol_const = 5.1063;
 
 /******Number of particles *********/
-const int n_water = 5500; //number of particles
-const int n_petroleum = 5500;
+const int n_water = 10000; //number of particles
+const int n_petroleum = 10000;
 
 /******Random initial conditions******/
 //One generator for every random draw in the set-up: the cube jitter, the
@@ -964,7 +964,7 @@ int main() {
   //cube places all N particles uniformly in the box, whose volume is exactly
   //vol_total, so the run starts at rest density everywhere. file reads 000.data,
   //a settled n_water+n_petroleum state (see InitialState).
-  initialize(liquid, limit, phases, InitialState::file); //file, cube or layered
+  initialize(liquid, limit, phases, InitialState::layered); //file, cube or layered
   for(int ts = 0; ts < n_steps; ts++) {
     double cvel_frac = (ts < cvel_ramp_steps) ? (double)ts / cvel_ramp_steps : 1.0;
 #pragma omp parallel for
