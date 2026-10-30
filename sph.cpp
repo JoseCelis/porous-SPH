@@ -753,9 +753,12 @@ void forces(Particle *body, Boundaries &limit) {
           double fx = -body[i].sigma * body[i].normal[0] * body[neigh].mass * ddk / (normnormali * body[neigh].density);
           double fy = -body[i].sigma * body[i].normal[1] * body[neigh].mass * ddk / (normnormali * body[neigh].density);
           double fz = -body[i].sigma * body[i].normal[2] * body[neigh].mass * ddk / (normnormali * body[neigh].density);
+          //fx..fz are density-premultiplied like every term in this loop (divided
+          //by body[i].density at the end), so the acceleration cap is too
           double fmag = sqrt(fx * fx + fy * fy + fz * fz);
-          if(fmag > surface_tension_amax) {
-            double scale = surface_tension_amax / fmag;
+          double fmax = surface_tension_amax * body[i].density;
+          if(fmag > fmax) {
+            double scale = fmax / fmag;
             fx *= scale;
             fy *= scale;
             fz *= scale;
@@ -770,8 +773,9 @@ void forces(Particle *body, Boundaries &limit) {
           double fy = body[neigh].sigma * body[neigh].normal[1] * body[i].mass * ddk / (normnormalj * body[i].density);
           double fz = body[neigh].sigma * body[neigh].normal[2] * body[i].mass * ddk / (normnormalj * body[i].density);
           double fmag = sqrt(fx * fx + fy * fy + fz * fz);
-          if(fmag > surface_tension_amax) {
-            double scale = surface_tension_amax / fmag;
+          double fmax = surface_tension_amax * body[neigh].density; //j's share is divided by j's density
+          if(fmag > fmax) {
+            double scale = fmax / fmag;
             fx *= scale;
             fy *= scale;
             fz *= scale;
