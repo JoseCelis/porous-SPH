@@ -17,7 +17,7 @@ using namespace std;
 
 /*******time parameteres******/
 //dt set by CFL: dt <= 0.4*h/cvel, h_water~0.0736, cvel=80 -> dt<=0.00037
-const int n_steps = 50000; //number of time steps
+const int n_steps = 20000; //number of time steps
 const double dt = 0.00005; //0.0003
 const int frame_every = 1000; //write a frame (NNN.dat) every this many steps
 //reorder the particles in memory by grid cell every this many steps (see
@@ -33,7 +33,8 @@ const int cvel_ramp_steps = 3000;
 
 /*****water fluid paramenters******/
 const double rho_water = 998.29; // kg/m^3
-const double vol_water = 0.5; //m^3
+const int n_water = 100; //number of particles
+const double vol_water = 0.01; //m^3
 //Monaghan stiffness rule: cvel >= 10*Vmax; Vmax~6.8 m/s from the drop impact -> cvel>=68
 const double cvel_water = 80.0; //speed of sound of the fluid
 const double gamma_water = 7.0; //adiabatic constant
@@ -52,7 +53,8 @@ const double threshold_water = 6.768; //was 7.065 for poly6; see the note on ker
 //artificial 400 kg/m^3; at 870 the density contrast with water is only ~13%, so
 //the phases separate much more slowly than before.
 const double rho_petroleum = 870.0; // kg/m^3
-const double vol_petroleum = 0.5; // m^3
+const int n_petroleum = 30000; //number of particles
+const double vol_petroleum = 1.5; // m^3
 const double cvel_petroleum = 80.0; // speed of sound of the fluid, matched to cvel_water for consistency
 const double gamma_petroleum = 7.0; // adiabatic constant
 //same scale as mu_water (3.5 <-> water's 1 mPa·s): medium crude is ~10 mPa·s
@@ -82,10 +84,6 @@ const double sigma_interphase = 0.05; // try 0.02 N/m
 //normal at a flat free surface is 0.958x its poly6 value, so threshold_water and
 //threshold_petroleum were rescaled by that factor to keep surface detection identical.
 const double kernel_vol_const = 5.1063;
-
-/******Number of particles *********/
-const int n_water = 10000; //number of particles
-const int n_petroleum = 10000;
 
 /******Random initial conditions******/
 //One generator for every random draw in the set-up: the cube jitter, the
