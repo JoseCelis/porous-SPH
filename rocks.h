@@ -331,6 +331,7 @@ void setup_rocks(double dim, int steps_per_frame, double r0) {
       }
       double Q[3][3];
       yaw_tilt(row[4], row[5], Q);
+      row[0] = wrap_x(row[0]); //min_image_x needs the centres inside one period
       rocks.push_back(make_rock(row, row[3], Q));
     }
   } else if(rock_mode == RockMode::random) {
