@@ -21,10 +21,15 @@ inline double wrap_x(double x) {
   return x;
 }
 
-//minimum-image x separation: the nearest periodic copy of the pair
+//minimum-image x separation: the nearest periodic copy of the pair. Two ifs
+//instead of round(), which is a slow library call on the hottest path in the
+//code. One correction is enough for |dx| < 1.5*box_Lx, which holds because the
+//particles are kept inside one period (wrap_x) and so are the rock centres.
 inline double min_image_x(double dx) {
   if(!periodic_x) return dx;
-  return dx - box_Lx * round(dx / box_Lx);
+  if(dx > 0.5 * box_Lx) return dx - box_Lx;
+  if(dx < -0.5 * box_Lx) return dx + box_Lx;
+  return dx;
 }
 
 /******Wall repulsion******/

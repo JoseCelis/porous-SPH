@@ -552,8 +552,9 @@ void press_calc(Particle *body) {
             dr0 = min_image_x(body[i].r[0] - body[j].r[0]);
             dr1 = body[i].r[1] - body[j].r[1];
             dr2 = body[i].r[2] - body[j].r[2];
-            normdr = sqrt(dr0 * dr0 + dr1 * dr1 + dr2 * dr2);
-            if(normdr <= body[i].h) {
+            double r2 = dr0 * dr0 + dr1 * dr1 + dr2 * dr2;
+            if(r2 <= body[i].h * body[i].h) { //most candidates fail: no sqrt for those
+              normdr = sqrt(r2);
               body[i].neighbour_list.push_back(j);
               if(body[i].phase == body[j].phase) {
                 rhoi += body[j].mass * kernel_cubic(body[i].h, normdr);
