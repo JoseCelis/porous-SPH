@@ -121,6 +121,14 @@ const DropShape drop_shape = DropShape::none;
 const int drop_radius_cells = 3;
 const double drop_x = 0.0, drop_y = 0.0, drop_z = 3.0;
 
+//One entry of a particle's half neighbour list. The separation is computed once
+//in press_calc(); the positions do not move before forces() has used it.
+struct Neighbour {
+  int j;
+  double dr[3]; //r_i - r_j, minimum image in x
+  double r; //|dr|
+};
+
 struct Offset {
   double x, y, z;
 };
@@ -225,13 +233,14 @@ private:
   double h, mass, rho0, density, mu, sigma, threshold, buoyancy, cvel, gamma; //fluid properties
   unsigned int phase;
   double normal[3], pressure; //calculated properties
-  vector<int> neighbour_list;
+  vector<Neighbour> neighbour_list;
 
 public:
   double r[3];
   double v[3];
   double a[3];
   int id; //index at the start of the run; frames are written in this order
+  NearbyRocks nearby_rocks;
   void set_params(int phases);
   void set_phase(unsigned int ph);
   void set_density(double rho) { density = rho; };
@@ -553,7 +562,7 @@ void press_calc(Particle *body) {
             double r2 = dr0 * dr0 + dr1 * dr1 + dr2 * dr2;
             if(r2 <= body[i].h * body[i].h) { //most candidates fail: no sqrt for those
               normdr = sqrt(r2);
-              body[i].neighbour_list.push_back(j);
+              body[i].neighbour_list.push_back({j, {dr0, dr1, dr2}, normdr});
               if(body[i].phase == body[j].phase) {
                 rhoi += body[j].mass * kernel_cubic(body[i].h, normdr);
 #pragma omp atomic
@@ -582,15 +591,11 @@ void press_calc(Particle *body) {
   }
 #pragma omp parallel for
   for(int i = 0; i < N; i++) {
-    double dr0, dr1, dr2, normdr;
     double gi = 0.0; //accumulate locally, flush once: see the note in forces()
     for(size_t k = 0; k < body[i].neighbour_list.size(); k++) {
-      int neigh = body[i].neighbour_list[k];
+      int neigh = body[i].neighbour_list[k].j;
       if(body[i].phase == body[neigh].phase) {
-        dr0 = min_image_x(body[i].r[0] - body[neigh].r[0]);
-        dr1 = body[i].r[1] - body[neigh].r[1];
-        dr2 = body[i].r[2] - body[neigh].r[2];
-        normdr = sqrt(dr0 * dr0 + dr1 * dr1 + dr2 * dr2);
+        double normdr = body[i].neighbour_list[k].r;
         gi += body[neigh].mass / body[neigh].density * kernel_cubic(body[i].h, normdr);
 #pragma omp atomic
         shepard[neigh] += body[i].mass / body[i].density * kernel_cubic(body[neigh].h, normdr);
@@ -619,18 +624,16 @@ void color_calc(Particle *body) {
     //accumulate locally, flush once: see the note in forces()
     double ni0 = 0.0, ni1 = 0.0, ni2 = 0.0;
     for(size_t j = 0; j < body[i].neighbour_list.size(); j++) {
-      int neigh = body[i].neighbour_list[j];
+      const Neighbour &nb = body[i].neighbour_list[j];
+      int neigh = nb.j;
 
       if(body[i].phase == body[neigh].phase) {
-        dr0 = min_image_x(body[i].r[0] - body[neigh].r[0]);
-        dr1 = body[i].r[1] - body[neigh].r[1];
-        dr2 = body[i].r[2] - body[neigh].r[2];
-        normdr = sqrt(dr0 * dr0 + dr1 * dr1 + dr2 * dr2);
+        normdr = nb.r;
         if(normdr < 1e-10) normdr = 1e-10; //avoid 0/0 for coincident particles
 
-        dr0 = dr0 / normdr;
-        dr1 = dr1 / normdr;
-        dr2 = dr2 / normdr;
+        dr0 = nb.dr[0] / normdr;
+        dr1 = nb.dr[1] / normdr;
+        dr2 = nb.dr[2] / normdr;
 
         double dwi = dkernel_cubic(body[i].h, normdr);
         double dwj = dkernel_cubic(body[neigh].h, normdr);
@@ -675,19 +678,17 @@ void forces(Particle *body, Boundaries &limit) {
     double prhoi = body[i].pressure / (body[i].density * body[i].density);
     double normnormali = sqrt(body[i].normal[0] * body[i].normal[0] + body[i].normal[1] * body[i].normal[1] + body[i].normal[2] * body[i].normal[2]);
     for(size_t j = 0; j < body[i].neighbour_list.size(); j++) {
-      int neigh = body[i].neighbour_list[j];
+      const Neighbour &nb = body[i].neighbour_list[j];
+      int neigh = nb.j;
 
       prhoj = body[neigh].pressure / (body[neigh].density * body[neigh].density);
 
-      dr0 = min_image_x(body[i].r[0] - body[neigh].r[0]);
-      dr1 = body[i].r[1] - body[neigh].r[1];
-      dr2 = body[i].r[2] - body[neigh].r[2];
-      normdr = sqrt(dr0 * dr0 + dr1 * dr1 + dr2 * dr2);
+      normdr = nb.r;
       if(normdr < 1e-10) normdr = 1e-10; //avoid 0/0 for coincident particles
 
-      dr0 = dr0 / normdr;
-      dr1 = dr1 / normdr;
-      dr2 = dr2 / normdr;
+      dr0 = nb.dr[0] / normdr;
+      dr1 = nb.dr[1] / normdr;
+      dr2 = nb.dr[2] / normdr;
 
       dv0 = body[neigh].v[0] - body[i].v[0];
       dv1 = body[neigh].v[1] - body[i].v[1];
@@ -838,7 +839,7 @@ void forces(Particle *body, Boundaries &limit) {
     ai1 += (wall_repulsion(body[i].r[1] - limit.boundary_y[0], boundary_r0, boundary_D) - wall_repulsion(limit.boundary_y[1] - body[i].r[1], boundary_r0, boundary_D)) * body[i].density;
     ai2 += (wall_repulsion(body[i].r[2] - limit.boundary_z[0], boundary_r0, boundary_D) - wall_repulsion(limit.boundary_z[1] - body[i].r[2], boundary_r0, boundary_D)) * body[i].density;
     double frock[3];
-    rock_force(body[i].r, boundary_r0, boundary_D, frock); //rocks repel like the walls, see rocks.h
+    rock_force(body[i].r, boundary_r0, boundary_D, frock, body[i].nearby_rocks); //rocks repel like the walls, see rocks.h
     ai0 += frock[0] * body[i].density;
     ai1 += frock[1] * body[i].density;
     ai2 += frock[2] * body[i].density;
@@ -892,7 +893,7 @@ void use_boundaries(Particle &body, Boundaries &limit) {
     body.r[2] = limit.boundary_z[1];
     if(body.v[2] > 0.0) body.v[2] = 0.0;
   }
-  rock_clamp(body.r, body.v); //same safety net for the rocks, see rocks.h
+  rock_clamp(body.r, body.v, body.nearby_rocks); //same safety net for the rocks, see rocks.h
 }
 
 void initialize(Particle *body, Boundaries &limit, int phases, InitialState state) {

@@ -4,8 +4,8 @@
 //where (rock_mode, rocks.csv or n_rocks), the geometry, and the hooks sph.cpp calls:
 //  setup_rocks(dim, steps_per_frame, r0) in initialize(): builds the rocks, writes rocks.txt
 //  rock_grow(ts)                     in main():          the growth ramp at the start of a run
-//  rock_force(r, r0, D, f)           in forces():        wall-style repulsion from every rock
-//  rock_clamp(r, v)                  in use_boundaries(): dissipative safety net, like the walls
+//  rock_force(r, r0, D, f, nearby)   in forces():        wall-style repulsion from the nearby rocks
+//  rock_clamp(r, v, nearby)          in use_boundaries(): dissipative safety net, like the walls
 //
 //The box (periodic_x, min_image_x, wrap_x, wall_repulsion) comes from
 //geometry.h. The fluid-dependent wall parameters (boundary_r0, boundary_D) and
@@ -90,6 +90,10 @@ const double rock_min_gap = 0.10;
 //crushing every overlapping particle onto their surfaces at step 0.
 const int rock_ramp_steps = 5000;
 double rock_scale = 1.0; //0..1, set each step in main()
+
+//extra distance covered by each particle's list of nearby rocks (NearbyRocks).
+//Larger means longer lists but fewer rebuilds; it does not change the results.
+const double rock_list_skin = 0.05;
 
 //one rock in world orientation, at full size: p is inside when
 //  n[k].(p - c) <= d[k]  for every face k  (n unit and already rotated)
@@ -386,12 +390,37 @@ void setup_rocks(double dim, int steps_per_frame, double r0) {
   std::cout << "rocks: " << rocks.size() << " (" << rock_mode_name(rock_mode) << "), written to rocks.txt" << std::endl;
 }
 
-//Acceleration on a particle at r from all rocks: the same wall_repulsion() as
+//The rocks a particle can touch, so it does not test all of them twice a step.
+//One per particle: the parallel loops only ever touch their own particle's.
+struct NearbyRocks {
+  std::vector<int> ids; //in increasing order, within reach + rock_list_skin of ref
+  double ref[3]; //where the particle was when ids was built
+  bool valid = false;
+};
+
+//Rebuilds the list once the particle has moved more than skin/2 from where it
+//was built. Until then every rock it could reach is still on the list. reach is
+//the full-size bound, so the growth ramp needs no refresh of its own.
+inline void refresh_nearby_rocks(NearbyRocks &nearby, const double r[3]) {
+  if(nearby.valid) {
+    double dx = min_image_x(r[0] - nearby.ref[0]), dy = r[1] - nearby.ref[1], dz = r[2] - nearby.ref[2];
+    if(dx * dx + dy * dy + dz * dz <= 0.25 * rock_list_skin * rock_list_skin) return;
+  }
+  nearby.ids.clear();
+  for(size_t ir = 0; ir < rocks.size(); ir++)
+    if(rock_within(rocks[ir], r, rocks[ir].reach + rock_list_skin)) nearby.ids.push_back(ir);
+  for(int j = 0; j < 3; j++) nearby.ref[j] = r[j];
+  nearby.valid = true;
+}
+
+//Acceleration on a particle at r from the rocks: the same wall_repulsion() as
 //the box walls (range r0, strength D), along the nearest face's outward
 //normal. Returned in f (the caller multiplies by density, like the wall terms).
-inline void rock_force(const double r[3], double r0, double D, double f[3]) {
+inline void rock_force(const double r[3], double r0, double D, double f[3], NearbyRocks &nearby) {
   f[0] = f[1] = f[2] = 0.0;
-  for(size_t ir = 0; ir < rocks.size(); ir++) {
+  refresh_nearby_rocks(nearby, r);
+  for(size_t n = 0; n < nearby.ids.size(); n++) {
+    int ir = nearby.ids[n];
     if(!rock_within(rocks[ir], r, rocks[ir].reach)) continue; //farther than r0 from every face: no force
     double nr[3];
     double frock = wall_repulsion(rock_distance(rocks[ir], r, nr), r0, D);
@@ -401,20 +430,29 @@ inline void rock_force(const double r[3], double r0, double D, double f[3]) {
   }
 }
 
-//Same safety net as the walls: put a particle that got inside a rock back onto
+//Same safety net as the walls: put a particle that got inside rock R back onto
 //the nearest face and remove the velocity component pointing into the rock.
-inline void rock_clamp(double r[3], double v[3]) {
-  for(size_t ir = 0; ir < rocks.size(); ir++) {
-    if(!rock_within(rocks[ir], r, rocks[ir].radius)) continue; //outside the bounding sphere: not inside the rock
-    double nr[3];
-    double d = rock_distance(rocks[ir], r, nr);
-    if(d < 0.0) {
-      for(int j = 0; j < 3; j++) r[j] -= d * nr[j];
-      r[0] = wrap_x(r[0]);
-      double vn = v[0] * nr[0] + v[1] * nr[1] + v[2] * nr[2];
-      if(vn < 0.0)
-        for(int j = 0; j < 3; j++) v[j] -= vn * nr[j];
-    }
+//Returns whether it moved the particle.
+inline bool clamp_to_rock(const Rock &R, double r[3], double v[3]) {
+  if(!rock_within(R, r, R.radius)) return false; //outside the bounding sphere: not inside the rock
+  double nr[3];
+  double d = rock_distance(R, r, nr);
+  if(d >= 0.0) return false;
+  for(int j = 0; j < 3; j++) r[j] -= d * nr[j];
+  r[0] = wrap_x(r[0]);
+  double vn = v[0] * nr[0] + v[1] * nr[1] + v[2] * nr[2];
+  if(vn < 0.0)
+    for(int j = 0; j < 3; j++) v[j] -= vn * nr[j];
+  return true;
+}
+
+inline void rock_clamp(double r[3], double v[3], NearbyRocks &nearby) {
+  refresh_nearby_rocks(nearby, r);
+  for(size_t n = 0; n < nearby.ids.size(); n++) {
+    if(!clamp_to_rock(rocks[nearby.ids[n]], r, v)) continue;
+    //the push can be large enough to leave the list's range: check the rest directly
+    for(size_t ir = nearby.ids[n] + 1; ir < rocks.size(); ir++) clamp_to_rock(rocks[ir], r, v);
+    return;
   }
 }
 
