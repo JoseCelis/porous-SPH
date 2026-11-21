@@ -54,8 +54,8 @@ const double threshold_water = 6.768; //was 7.065 for poly6; see the note on ker
 //artificial 400 kg/m^3; at 870 the density contrast with water is only ~13%, so
 //the phases separate much more slowly than before.
 const double rho_petroleum = 870.0; // kg/m^3
-const int n_petroleum = 40000; //number of particles
-const double vol_petroleum = 1.8; // m^3
+const int n_petroleum = 46750; //number of particles
+const double vol_petroleum = 2.10376; // m^3
 const double cvel_petroleum = 80.0; // speed of sound of the fluid, matched to cvel_water for consistency
 const double gamma_petroleum = 7.0; // adiabatic constant
 //same scale as mu_water (3.5 <-> water's 1 mPa·s): medium crude is ~10 mPa·s
@@ -98,14 +98,14 @@ inline double uniform01() {
   return uniform_real_distribution<double>(0.0, 1.0)(init_rng);
 }
 
-/******Water drop released above the equilibrium pool*******/
+/******Drop released above the equilibrium pool*******/
 //Shape of the drop: sphere, cube, or none. Use none for the settling pass that
 //generates 000.data: the file reader expects exactly n_water+n_petroleum rows, so the run
 //that writes it must not carry any drop particles.
 //Otherwise the particles sit on a
-//simple-cubic lattice at the water particle's own rest spacing
-//s = (vol_water/n_water)^(1/3), so the drop starts at the pool's density rather than
-//artificially compressed or dilute, and the offsets are exactly symmetric under
+//simple-cubic lattice at the rest spacing of the drop's phase, s_drop, so the
+//drop starts at that phase's rest density rather than artificially compressed
+//or dilute, and the offsets are exactly symmetric under
 //reflection through the drop centre in all three axes (no random jitter).
 enum class DropShape {
   none,
@@ -119,8 +119,13 @@ const DropShape drop_shape = DropShape::none;
 //instead of holding together as a drop.
 //Resulting n_drop -- sphere: 7, 33, 123, 257 for R = 1, 2, 3, 4
 //                   cube (2R+1)^3: 27, 125, 343, 729
-const int drop_radius_cells = 3;
+const int drop_radius_cells = 7;
 const double drop_x = 0.0, drop_y = 0.0, drop_z = 3.0;
+const unsigned int drop_phase = 2; //1 = water, 2 = petroleum
+//rest spacing of the drop's phase. Each phase's particle mass comes from its own
+//vol/n, so a lattice at the other phase's spacing would start the drop too
+//dense or too dilute.
+const double s_drop = cbrt(drop_phase == 1 ? vol_water / n_water : vol_petroleum / n_petroleum);
 
 //One entry of a particle's half neighbour list. The separation is computed once
 //in press_calc(); the positions do not move before forces() has used it.
@@ -134,7 +139,7 @@ struct Offset {
   double x, y, z;
 };
 
-//Lattice offsets for the drop, in units of the water particle spacing. n_drop is
+//Lattice offsets for the drop, in units of s_drop. n_drop is
 //taken from this same function, so the particle count can never disagree with
 //the placement loop.
 vector<Offset> drop_offsets() {
@@ -279,6 +284,7 @@ public:
   friend void forces(Particle *body, Boundaries &limit);
   friend void write_frame(Particle *body, int count);
   friend void sort_by_cell(vector<Particle> &particles);
+  friend void print_phases(Particle *body);
 };
 
 void Particle::set_params(int phases) {
@@ -479,9 +485,9 @@ void initial_cond(InitialState state, Particle *body, int phases) {
       exit(1);
     }
 
-    //Water drop: a symmetric cluster released above the pool, built from the
-    //same offsets that determined n_drop and scaled by the water particle's rest
-    //spacing so the drop begins at the pool's own density. Deliberately not
+    //The drop: a symmetric cluster released above the pool, built from the
+    //same offsets that determined n_drop and scaled by its phase's rest
+    //spacing (s_drop) so the drop begins at that phase's rest density. Deliberately not
     //jittered -- the symmetry is the point, so the splash stays axisymmetric.
     vector<Offset> off = drop_offsets();
     for(size_t k = 0; k < off.size(); k++) {
@@ -489,10 +495,10 @@ void initial_cond(InitialState state, Particle *body, int phases) {
       body[i].set_density(0.0);
       body[i].reinit();
       fill(body[i].v, body[i].v + 3, 0.0);
-      body[i].set_phase(1); //water
-      body[i].r[0] = drop_x + off[k].x * s_water;
-      body[i].r[1] = drop_y + off[k].y * s_water;
-      body[i].r[2] = drop_z + off[k].z * s_water;
+      body[i].set_phase(drop_phase);
+      body[i].r[0] = drop_x + off[k].x * s_drop;
+      body[i].r[1] = drop_y + off[k].y * s_drop;
+      body[i].r[2] = drop_z + off[k].z * s_drop;
     }
   }
 }
@@ -944,7 +950,7 @@ void initialize(Particle *body, Boundaries &limit, int phases, InitialState stat
   if(state == InitialState::file && n_drop > 0) {
     //raise the ceiling clear of the drop: its own top, plus a few smoothing
     //lengths so the ceiling repulsion is not touching it at release
-    zheight = drop_z + drop_radius_cells * s_water + 4.0 * h_water_ref;
+    zheight = drop_z + drop_radius_cells * s_drop + 4.0 * h_water_ref;
   }
   limit.set_boundaries(dim, zheight);
   setup_rocks(dim, frame_every, boundary_r0); //after set_boundaries: needs box_Lx for the periodic distances
@@ -1009,6 +1015,21 @@ void sort_by_cell(vector<Particle> &particles) {
   particles.swap(sorted);
 }
 
+//Startup summary: particles and rest volume (sum of mass/rho0) per phase,
+//counted from the particles themselves, so the drop is included in its phase
+void print_phases(Particle *body) {
+  int count[3] = {0, 0, 0};
+  double volume[3] = {0.0, 0.0, 0.0};
+  for(int i = 0; i < N; i++) {
+    count[body[i].phase]++;
+    volume[body[i].phase] += body[i].mass / body[i].rho0;
+  }
+  cout << "water:     " << count[1] << " particles, volume " << volume[1] << " m^3" << endl;
+  cout << "petroleum: " << count[2] << " particles, volume " << volume[2] << " m^3" << endl;
+  if(n_drop > 0)
+    cout << "  (including the drop: " << n_drop << " " << (drop_phase == 1 ? "water" : "petroleum") << " particles)" << endl;
+}
+
 void write_frame(Particle *body, int count) {
   string name;
   stringstream convert; // stringstream used for the conversion
@@ -1054,8 +1075,9 @@ int main() {
   //cube places all N particles uniformly in the box, whose volume is exactly
   //vol_total, so the run starts at rest density everywhere. file reads 000.data,
   //a settled n_water+n_petroleum state (see InitialState).
-  initialize(liquid, limit, phases, InitialState::layered); //file, cube or layered
+  initialize(liquid, limit, phases, InitialState::file); //file, cube or layered
   for(int i = 0; i < N; i++) particles[i].id = i;
+  print_phases(liquid);
   for(int ts = 0; ts < n_steps; ts++) {
     if(ts % sort_every == 0) {
       sort_by_cell(particles);
